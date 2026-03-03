@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["opal-cli","opal-core", "opal-lsp"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+logos = "0.16"

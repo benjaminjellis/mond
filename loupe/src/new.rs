@@ -28,6 +28,10 @@ pub(crate) fn create_new_project(name: String, root: &Path, lib: bool) -> eyre::
     } else {
         let bin_root = src_dir.join(BIN_ENTRY_POINT);
         std::fs::write(bin_root, OPAL_HELLO_WORLD)?;
+
+        let tests_dir = project_dir.join("tests");
+        std::fs::create_dir_all(&tests_dir)
+            .context(format!("could not create tests dir {tests_dir:?}"))?;
     }
 
     Ok(())

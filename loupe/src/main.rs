@@ -5,6 +5,7 @@ mod gitignore;
 mod manifest;
 mod new;
 mod release;
+mod test;
 mod utils;
 
 use std::path::{Path, PathBuf};
@@ -13,7 +14,8 @@ use clap::{Parser, Subcommand};
 
 pub(crate) const MANIFEST_NAME: &str = "loupe.toml";
 pub(crate) const TARGET_DIR: &str = "target";
-pub(crate) const DEBUG_DIR: &str = "target/debug";
+pub(crate) const DEBUG_BUILD_DIR: &str = "debug";
+pub(crate) const TEST_BUILD_DIR: &str = "tests";
 pub(crate) const SOURCE_DIR: &str = "src";
 pub(crate) const BIN_ENTRY_POINT: &str = "main.opal";
 pub(crate) const LIB_ROOT: &str = "lib.opal";
@@ -37,6 +39,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Run,
+    Test,
     Format {
         /// File to format (formats all source files if omitted)
         #[arg(long)]
@@ -76,6 +79,9 @@ fn main() -> eyre::Result<()> {
         }
         Commands::Run => {
             build::build(root, true)?;
+        }
+        Commands::Test => {
+            test::test(root)?;
         }
         Commands::Release => {
             release::release(root)?;

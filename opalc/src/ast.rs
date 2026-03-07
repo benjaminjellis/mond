@@ -138,6 +138,10 @@ pub enum Pattern {
     Constructor(String, Vec<Pattern>, Range<usize>),
     /// Matches any of several alternatives: `10 or 11 or 12`
     Or(Vec<Pattern>, Range<usize>),
+    /// Matches an empty list: `[]`
+    EmptyList(Range<usize>),
+    /// Matches a cons cell: `[head | tail]`
+    Cons(Box<Pattern>, Box<Pattern>, Range<usize>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

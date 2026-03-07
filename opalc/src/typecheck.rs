@@ -898,6 +898,30 @@ impl TypeChecker {
                 let s_unify = unify(&apply_subst(&subst, &con_ty), expected)?;
                 Ok((compose_subst(&s_unify, &subst), pat_env))
             }
+            Pattern::EmptyList(_) => {
+                let elem_ty = self.fresh();
+                let list_ty = Type::array(elem_ty);
+                Ok((unify(expected, &list_ty)?, env.clone()))
+            }
+
+            Pattern::Cons(head_pat, tail_pat, _) => {
+                let elem_ty = self.fresh();
+                let list_ty = Type::array(elem_ty.clone());
+                let s_list = unify(expected, &list_ty)?;
+
+                let (s_head, head_env) =
+                    self.infer_pattern(env, head_pat, &apply_subst(&s_list, &elem_ty))?;
+                let s = compose_subst(&s_head, &s_list);
+
+                let (s_tail, tail_env) = self.infer_pattern(
+                    &head_env,
+                    tail_pat,
+                    &apply_subst(&s, &list_ty),
+                )?;
+                let s = compose_subst(&s_tail, &s);
+                Ok((s, tail_env))
+            }
+
             Pattern::Or(pats, _) => {
                 // Each alternative must type-check against the expected type.
                 // Apply accumulated substitution before each check so alternatives
@@ -2032,6 +2056,64 @@ mod tests {
         let src = "(let f {x y} (match x y 1 1 ~> True _ _ ~> False))\n(let main {} (f 1 1))";
         let ty = check(src).unwrap();
         assert_eq!(ty, Type::bool());
+    }
+
+    #[test]
+    fn infer_empty_list_pattern() {
+        let src = "(let f {lst} (match lst [] ~> 0 [h | _] ~> 1))\n(let main {} (f []))";
+        let ty = check(src).unwrap();
+        assert_eq!(ty, Type::int());
+    }
+
+    #[test]
+    fn infer_cons_pattern_binds_head() {
+        // h is bound to the head element — must be Int since the list is Int list
+        let src = "(let f {lst} (match lst [] ~> 0 [h | _] ~> h))\n(let main {} (f [1 2 3]))";
+        let ty = check(src).unwrap();
+        assert_eq!(ty, Type::int());
+    }
+
+    #[test]
+    fn infer_cons_pattern_binds_tail() {
+        // t is bound to the tail — must be List Int
+        let src = "(let f {lst} (match lst [] ~> lst [_ | t] ~> t))\n(let main {} (f [1 2]))";
+        let ty = check(src).unwrap();
+        assert_eq!(ty, Type::array(Type::int()));
+    }
+
+    #[test]
+    fn infer_recursive_list_function() {
+        // count elements using [] and [h | t] — classic recursive list function
+        let src = r#"
+            (let count {lst acc}
+              (match lst
+                [] ~> acc
+                [_ | t] ~> (count t (+ acc 1))))
+            (let main {} (count [1 2 3] 0))
+        "#;
+        let ty = check(src).unwrap();
+        assert_eq!(ty, Type::int());
+    }
+
+    #[test]
+    fn infer_list_pattern_wildcard_tail() {
+        // `_` is valid as the tail pattern
+        let src = "(let first {lst} (match lst [] ~> 0 [h | _] ~> h))\n(let main {} (first [5]))";
+        let ty = check(src).unwrap();
+        assert_eq!(ty, Type::int());
+    }
+
+    #[test]
+    fn reject_cons_pattern_wrong_element_type() {
+        // list is List Int but arm body uses h as Bool — should fail
+        let src = r#"
+            (let f {lst}
+              (match lst
+                [] ~> False
+                [h | _] ~> (= h True)))
+            (let main {} (f [1 2]))
+        "#;
+        assert!(check(src).is_err(), "expected type error: Bool vs Int in cons pattern");
     }
 
     #[test]

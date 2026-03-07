@@ -284,3 +284,18 @@ fn formats_real_program() {
         "formatter is not idempotent:\nFirst pass:\n{out}\nSecond pass:\n{out2}"
     );
 }
+
+#[test]
+fn extern_type_sig_flat() {
+    let src = "(pub extern let put ~ ('k -> 'v -> Map 'k 'v -> Map 'k 'v) maps/put)";
+    assert_eq!(format(src, 100), format!("{src}\n"));
+}
+
+#[test]
+fn extern_type_sig_idempotent() {
+    let src = include_str!("../../opal-std/src/map.opal");
+    let out = format(src, 100);
+    assert!(!out.contains("'k\n"), "type sig is breaking badly:\n{out}");
+    let out2 = format(&out, 100);
+    assert_eq!(out, out2, "formatter is not idempotent");
+}

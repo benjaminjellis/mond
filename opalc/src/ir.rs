@@ -63,6 +63,8 @@ pub enum Pattern {
     Str(String),
     /// `{tag, P1, P2}` — tuple pattern for variants/records
     Tuple(Vec<Pattern>),
-    /// `[P1, P2, P3]` — list pattern
+    /// `[P1, P2, P3]` — fixed-length list pattern
     List(Vec<Pattern>),
+    /// `[H | T]` — cons pattern
+    Cons(Box<Pattern>, Box<Pattern>),
 }

@@ -34,7 +34,7 @@ Run it with `loupe run`.
 
 ### Functions
 
-Top-level functions are declared with `let`. Arguments go in `{}`. All named functions are self-recursive by default.
+Top-level functions are declared with `let`. Arguments go in `{}`. All named functions are self-recursive by default. By convention function and variable names are snake_case.
 
 ```
 (let square {x}
@@ -48,10 +48,10 @@ Top-level functions are declared with `let`. Arguments go in `{}`. All named fun
 
 ### Local bindings
 
-`(let [name value] body)` binds a name for use in a function `body`. Bindings can be chained — each name is in scope for the rest.
+`(let [name value] body)` binds a value to a name. Bindings can be chained, each name is in scope for the rest and for the body of the local binding.
 
 ```
-(let circle-area {r}
+(let circle_area {r}
   (let [pi   3.14159
         r-sq (*. r r)]
     (*. pi r-sq)))
@@ -59,11 +59,11 @@ Top-level functions are declared with `let`. Arguments go in `{}`. All named fun
 
 ### Primitive Types
 
-Opal has `Int`, `Float`, `String`, `Bool`, and `Unit` as primitive type. `Int` and `Float` operators are distinct — float operators carry a `.` suffix.
+Opal has `Int`, `Float`, `String`, `Bool`, and `Unit` as primitive types. `Int` and `Float` operators are distinct — float operators carry a `.` suffix.
 
 ```
-(let add-ints   {a b} (+ a b))   ;; Int -> Int -> Int
-(let add-floats {a b} (+. a b))  ;; Float -> Float -> Float
+(let add_ints   {a b} (+ a b))   ;; Int -> Int -> Int
+(let add_floats {a b} (+. a b))  ;; Float -> Float -> Float
 ```
 
 ### If / else
@@ -121,7 +121,7 @@ Fields are prefixed with `:`. Access a field with `(:field record)`.
 
 (let origin {} (Point :x 0 :y 0))
 
-(let x-coord {p} (:x p))
+(let x_coord {p} (:x p))
 ```
 
 ### Lambdas
@@ -143,7 +143,7 @@ Anonymous functions with `fn`:
 
 ### Imports
 
-`(use std)` brings in the standard library and lets you call functions as `module/function`:
+`(use std)` brings in the standard library and it's modules and lets you call functions as `module/function`:
 
 ```
 (use std)
@@ -153,7 +153,7 @@ Anonymous functions with `fn`:
   (io/println (string/to_upper "hello")))
 ```
 
-`(use std/io)` imports a single module and brings its functions into scope unqualified:
+`(use std/io)` imports a single module and brings its public functions into scope unqualified:
 
 ```
 (use std/io)
@@ -164,7 +164,7 @@ Anonymous functions with `fn`:
 
 ### Result bind
 
-`let?` is syntactic sugar for monadic bind. It requires a `bind` function in scope and chains operations that return a `Result`, short-circuiting on the first error.
+`let?` is syntactic sugar for monadic bind. It requires a `bind` function in scope and chains operations that return a `Result`, short-circuiting on the first error. This syntax can be used simply with `(use std/result)`.
 
 ```
 (let? [a (might-fail)
@@ -182,13 +182,15 @@ Bind an Erlang function to an Opal name with `extern let`, providing a type sign
 (extern let system-time ~ (Unit -> Int) erlang/system_time)
 ```
 
-`pub extern let` makes the binding importable by other modules — this is how the standard library is implemented:
+`pub extern let` makes the binding importable by other modules — this is how large parts of the standard library are implemented:
 
 ```
 (pub extern let println ~ (String -> Unit) io/format)
 ```
 
 ### Building and releasing
+
+opal's build tool (and soon to be package manager) is called `loupe`. 
 
 ```
 loupe build    # compile to target/debug/

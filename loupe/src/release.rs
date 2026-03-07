@@ -15,7 +15,7 @@ pub(crate) fn release(project_dir: &Path) -> eyre::Result<()> {
     let src_dir = staging.join("src");
     std::fs::create_dir_all(&src_dir).context("could not create release staging dir")?;
 
-    let ErlSources { erl_paths: _, manifest, project_type } =
+    let ErlSources { erl_paths: _, manifest, project_type, .. } =
         generate_erl_sources(project_dir, &src_dir)?;
 
     if matches!(project_type, ProjectType::Lib) {

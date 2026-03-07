@@ -1437,7 +1437,44 @@ impl Lowerer {
                 None
             }
 
-            // Rejection of syntax variants not valid in patterns (Arrays, Brackets, Curlies)
+            // `[]` — empty list, `[h | t]` — cons pattern
+            SExpr::Square(items, span) => {
+                if items.is_empty() {
+                    return Some(Pattern::EmptyList(span.clone()));
+                }
+                // Find the `|` operator that separates head from tail
+                let pipe_pos = items.iter().position(|item| {
+                    if let SExpr::Atom(t) = item {
+                        if t.kind == TokenKind::Operator {
+                            return self.source_at(file_id, t.span.clone()) == "|";
+                        }
+                    }
+                    false
+                });
+                match pipe_pos {
+                    Some(pos) if pos == 1 && items.len() == 3 => {
+                        let head = self.lower_pattern(file_id, &items[0])?;
+                        let tail = self.lower_pattern(file_id, &items[2])?;
+                        Some(Pattern::Cons(Box::new(head), Box::new(tail), span.clone()))
+                    }
+                    _ => {
+                        self.error(
+                            Diagnostic::error()
+                                .with_code("E005")
+                                .with_message("invalid list pattern")
+                                .with_labels(vec![Label::primary(file_id, span.clone())
+                                    .with_message("expected `[]` or `[head | tail]`")])
+                                .with_notes(vec![
+                                    "hint: list patterns are `[]` (empty) or `[h | t]` (cons)"
+                                        .into(),
+                                ]),
+                        );
+                        None
+                    }
+                }
+            }
+
+            // Rejection of syntax variants not valid in patterns
             other => {
                 let span = other.span();
                 self.error(

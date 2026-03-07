@@ -384,6 +384,13 @@ fn lower_pattern(pat: &ast::Pattern, ctx: &Ctx) -> ir::Pattern {
                 ir::Pattern::Tuple(items)
             }
         }
+        ast::Pattern::EmptyList(_) => ir::Pattern::List(vec![]),
+
+        ast::Pattern::Cons(head, tail, _) => ir::Pattern::Cons(
+            Box::new(lower_pattern(head, ctx)),
+            Box::new(lower_pattern(tail, ctx)),
+        ),
+
         ast::Pattern::Or(pats, _) => {
             // Or-patterns are expanded by the caller via expand_or_pattern
             // If we get here directly, just use the first alternative
@@ -627,6 +634,9 @@ fn emit_pattern(pat: &ir::Pattern) -> String {
                         .join(", ")
                 )
             }
+        }
+        ir::Pattern::Cons(head, tail) => {
+            format!("[{} | {}]", emit_pattern(head), emit_pattern(tail))
         }
     }
 }

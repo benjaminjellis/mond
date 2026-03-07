@@ -1,3 +1,1 @@
-(pub type ['a] Option (
-  None
-  (Some ~ 'a)))
+(pub type ['a] Option ( None (Some ~ 'a) ))

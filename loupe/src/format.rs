@@ -3,7 +3,7 @@ use eyre::Context;
 use crate::{MANIFEST_NAME, SOURCE_DIR, utils::find_opal_files};
 use std::path::{Path, PathBuf};
 
-const LINE_WIDTH: usize = 45;
+const LINE_WIDTH: usize = 100;
 
 pub(crate) fn format_fie(source_file_path: &PathBuf) -> eyre::Result<()> {
     let source_file = std::fs::read_to_string(source_file_path)

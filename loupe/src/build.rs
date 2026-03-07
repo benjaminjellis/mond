@@ -4,15 +4,19 @@ use std::{
     process::Command,
 };
 
-use crate::{BIN_ENTRY_POINT, LIB_ROOT, gitignore};
+use crate::{BIN_ENTRY_POINT, LIB_ROOT, TARGET_DIR, gitignore};
 use clap::builder::OsStr;
 use eyre::Context;
 
-use crate::{DEBUG_DIR, ProjectType, SOURCE_DIR, manifest, utils::find_opal_files};
+use crate::{DEBUG_BUILD_DIR, ProjectType, SOURCE_DIR, manifest, utils::find_opal_files};
 
 // opal-std is embedded at compile time — std ships with loupe,
 use include_dir::{Dir, include_dir};
 static STD_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../opal-std/src");
+
+pub(crate) fn std_dir() -> &'static Dir<'static> {
+    &STD_DIR
+}
 
 /// Return `(user_name, erlang_name, source)` for each std module:
 ///   - user_name:   the name users write in `(use std/io)` → "io"
@@ -45,6 +49,12 @@ pub(crate) struct ErlSources {
     pub erl_paths: Vec<PathBuf>,
     pub manifest: manifest::LoupeManifest,
     pub project_type: ProjectType,
+    // Compilation state exposed for `loupe test`
+    pub module_exports: HashMap<String, Vec<String>>,
+    pub module_type_decls: HashMap<String, Vec<opalc::ast::TypeDecl>>,
+    pub all_module_schemes: HashMap<String, opalc::typecheck::TypeEnv>,
+    pub std_mods: Vec<(String, String, String)>,
+    pub std_aliases: HashMap<String, String>,
 }
 
 /// Compile all Opal source files and write `.erl` output into `erl_dir`.
@@ -200,11 +210,10 @@ pub(crate) fn generate_erl_sources(project_dir: &Path, erl_dir: &Path) -> eyre::
         // writing a qualified call `mod/fn`.  No transitive propagation: if you
         // want `Some`/`None` you write `(use std/option)`; if you want
         // `TakeResult` field access you write `(use std/map)` or call `map/take`.
-        let mut referenced_modules: std::collections::HashSet<String> =
-            opalc::used_modules(source)
-                .into_iter()
-                .map(|(_, mod_name)| mod_name)
-                .collect();
+        let mut referenced_modules: std::collections::HashSet<String> = opalc::used_modules(source)
+            .into_iter()
+            .map(|(_, mod_name)| mod_name)
+            .collect();
         for tok in opalc::lexer::Lexer::new(source).lex() {
             if let opalc::lexer::TokenKind::QualifiedIdent((module, _)) = tok.kind {
                 referenced_modules.insert(module);
@@ -212,12 +221,7 @@ pub(crate) fn generate_erl_sources(project_dir: &Path, erl_dir: &Path) -> eyre::
         }
         let imported_type_decls: Vec<opalc::ast::TypeDecl> = referenced_modules
             .iter()
-            .flat_map(|mod_name| {
-                module_type_decls
-                    .get(mod_name)
-                    .cloned()
-                    .unwrap_or_default()
-            })
+            .flat_map(|mod_name| module_type_decls.get(mod_name).cloned().unwrap_or_default())
             .collect();
 
         match opalc::compile_with_imports(
@@ -324,22 +328,42 @@ pub(crate) fn generate_erl_sources(project_dir: &Path, erl_dir: &Path) -> eyre::
         }
     }
 
+    // Copy any hand-written .erl files from opal-std/src/ into the build dir.
+    // These are embedded alongside the .opal sources via include_dir! and are
+    // written verbatim — useful for helpers that are awkward to express in Opal
+    // (e.g. functions that return Erlang atoms like `nomatch`).
+    for file in STD_DIR.files() {
+        if file.path().extension().and_then(|e| e.to_str()) == Some("erl") {
+            let file_name = file.path().file_name().unwrap();
+            let dest = erl_dir.join(file_name);
+            std::fs::write(&dest, file.contents()).expect("could not write std .erl file");
+            erl_paths.push(dest);
+        }
+    }
+
     Ok(ErlSources {
         erl_paths,
         manifest,
         project_type,
+        module_exports,
+        module_type_decls,
+        all_module_schemes,
+        std_mods,
+        std_aliases,
     })
 }
 
 pub(crate) fn build(project_dir: &Path, run: bool) -> eyre::Result<()> {
-    let build_dir = project_dir.join(DEBUG_DIR);
-    std::fs::create_dir_all(&build_dir).context(format!("could not create {DEBUG_DIR} dir"))?;
+    let build_dir = project_dir.join(TARGET_DIR).join(DEBUG_BUILD_DIR);
+    std::fs::create_dir_all(&build_dir)
+        .context(format!("could not create {DEBUG_BUILD_DIR} dir"))?;
     gitignore::write_gitignore(project_dir.into())?;
 
     let ErlSources {
         erl_paths,
         manifest,
         project_type,
+        ..
     } = generate_erl_sources(project_dir, &build_dir)?;
 
     if matches!(project_type, ProjectType::Lib) && run {
@@ -362,7 +386,6 @@ pub(crate) fn build(project_dir: &Path, run: bool) -> eyre::Result<()> {
         eprintln!("{}", String::from_utf8_lossy(&erlc.stderr));
         std::process::exit(1);
     }
-
     if run {
         let status = Command::new("erl")
             .arg("-noinput")

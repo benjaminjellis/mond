@@ -1,7 +1,5 @@
 ;; map.opal — key/value maps backed by Erlang maps
-
 (use option)
-
 (pub extern type ['k 'v] Map maps/map)
 
 ;; Create an empty map.
@@ -17,10 +15,7 @@
 (pub extern let has ~ ('k -> Map 'k 'v -> Bool) maps/is_key)
 
 ;; Lookup a key, returning None if absent.
-(pub let get {k m}
-  (if (has k m)
-    (Some (get_value k m))
-    None))
+(pub let get {k m} (if (has k m) (Some (get_value k m)) None))
 
 ;; Remove a key (no-op if absent).
 (pub extern let remove ~ ('k -> Map 'k 'v -> Map 'k 'v) maps/remove)
@@ -29,12 +24,10 @@
 (pub extern let size ~ (Map 'k 'v -> Int) maps/size)
 
 ;; Result of a take operation: the updated map and the removed value (if present).
-(pub type ['k 'v] TakeResult (
-  (:map   ~ Map 'k 'v)
-  (:value ~ Option 'v)))
+(pub type ['k 'v] TakeResult ( (:map ~ Map 'k 'v) (:value ~ Option 'v) ))
 
 ;; Remove a key and return both the updated map and the removed value.
 (pub let take {k m}
   (if (has k m)
     (TakeResult :map (remove k m) :value (Some (get_value k m)))
-    (TakeResult :map m            :value None)))
+    (TakeResult :map m :value None)))

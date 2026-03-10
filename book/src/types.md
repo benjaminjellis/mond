@@ -1,5 +1,5 @@
 # Types
-`Zier` is statically typed. There are two forms of types that you can express:
+`Mond` is statically typed. There are two forms of types that you can express:
 
 ## Sum / Variant Types
 e.g. `Result` and `Option`
@@ -36,7 +36,7 @@ The constructors can be nullary (like `None`) or encompass data (like `Some`). T
 Record types have fields which, by convention, are `snake_case` identifiers. Each is prefixed with `:`. You can access a field with `(:field record)`. `~` is again used to specify what type each field is. Just like sum/variant types, you can use a polymorphic type like `'a`.
 
 e.g.
-```zier
+```mond
 (type ['a] Point
   ((:x ~ 'a)
    (:y ~ 'a)))

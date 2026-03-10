@@ -1,0 +1,10 @@
+# The Mond Programming Language
+Mond is an experimental functional language with a Lisp-inspired syntax and ML-style static types that targets the BEAM.
+
+Mond's core features are:
+- immutability
+- Hindley-Milner type system that infers types, no hints or signatures.
+- strong typing
+- no function coloring
+- errors as values
+- no panics or exceptions

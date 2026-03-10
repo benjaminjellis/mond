@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["zierc", "zier-lsp", "zier", "zier-format"]
+members = ["mondc", "mond-lsp", "mond", "mond-format"]
 
 [workspace.package]
 edition = "2024"

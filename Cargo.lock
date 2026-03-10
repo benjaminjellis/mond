@@ -541,6 +541,51 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "mond"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "codespan-reporting",
+ "eyre",
+ "include_dir",
+ "mond-format",
+ "mond-lsp",
+ "mondc",
+ "semver",
+ "serde",
+ "tokio",
+ "toml",
+ "walkdir",
+]
+
+[[package]]
+name = "mond-format"
+version = "0.1.0"
+dependencies = [
+ "mondc",
+]
+
+[[package]]
+name = "mond-lsp"
+version = "0.1.0"
+dependencies = [
+ "codespan-reporting",
+ "include_dir",
+ "mond-format",
+ "mondc",
+ "tokio",
+ "tower-lsp",
+]
+
+[[package]]
+name = "mondc"
+version = "0.1.0"
+dependencies = [
+ "codespan-reporting",
+ "logos",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1125,51 +1170,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "zier"
-version = "0.1.0"
-dependencies = [
- "clap",
- "codespan-reporting",
- "eyre",
- "include_dir",
- "semver",
- "serde",
- "tokio",
- "toml",
- "walkdir",
- "zier-format",
- "zier-lsp",
- "zierc",
-]
-
-[[package]]
-name = "zier-format"
-version = "0.1.0"
-dependencies = [
- "zierc",
-]
-
-[[package]]
-name = "zier-lsp"
-version = "0.1.0"
-dependencies = [
- "codespan-reporting",
- "include_dir",
- "tokio",
- "tower-lsp",
- "zier-format",
- "zierc",
-]
-
-[[package]]
-name = "zierc"
-version = "0.1.0"
-dependencies = [
- "codespan-reporting",
- "logos",
 ]
 
 [[package]]

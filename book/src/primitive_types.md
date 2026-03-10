@@ -1,5 +1,5 @@
 # Primitive Types
-`Zier` has `Int`, `Float`, `String`, `Bool`, and `Unit` as primitive types. 
+`Mond` has `Int`, `Float`, `String`, `Bool`, and `Unit` as primitive types. 
 
 ## Int and Float
 `Int` and `Float` operators are distinct, float operators use a `.` suffix.

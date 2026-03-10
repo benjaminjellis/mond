@@ -1,0 +1,40 @@
+//! Mond source code formatter.
+//!
+//! Uses the Wadler-Lindig pretty-printing algorithm to format Mond source.
+//!
+//! # Example
+//! ```
+//! let src = "(let add {a b} (+ a b))";
+//! let formatted = mond_format::format(src, 80);
+//! ```
+
+mod doc;
+mod pretty;
+#[cfg(test)]
+mod tests;
+
+/// Format Mond source code with the given line `width`.
+///
+/// Returns the formatted source, or the original source unchanged if parsing
+/// fails (so the formatter is safe to call unconditionally).
+pub fn format(source: &str, width: usize) -> String {
+    let mut lowerer = mondc::lower::Lowerer::new();
+    // Lex once — the full token stream includes comment/doc-comment tokens.
+    let tokens = mondc::lexer::Lexer::new(source).lex();
+    let file_id = lowerer.add_file("fmt.mond".into(), source.into());
+
+    // SExprParser::new filters comment/doc-comment tokens out internally, so
+    // the parser sees a clean stream. We keep the full `tokens` for the
+    // formatter.
+    let sexprs = match mondc::sexpr::SExprParser::new(tokens.clone(), file_id).parse() {
+        Ok(s) => s,
+        Err(_) => return source.to_string(),
+    };
+
+    pretty::format_sexprs(&sexprs, &tokens, source, width)
+}
+
+/// Format with the default line width (100 columns).
+pub fn format_default(source: &str) -> String {
+    format(source, 80)
+}

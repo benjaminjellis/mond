@@ -1,6 +1,6 @@
 # Summary
 
-[The Zier Programming Language](./the_zier_programming_language.md)
+[The Mond Programming Language](./the_mond_programming_language.md)
 - [Getting Started](./getting_started.md)
   - [Installation](./installation.md)
   - [The CLI](./cli.md)

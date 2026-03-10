@@ -1,0 +1,7 @@
+[package]
+name = "mond-format"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+mondc = { path = "../mondc" }

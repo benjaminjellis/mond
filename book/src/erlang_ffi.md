@@ -1,7 +1,7 @@
 # Erlang FFI
 One of the big benefits of targeting the BEAM is being able to leverage a rich and mature ecosystem.
 
-We can do so by binding Erlang functions to `Zier` names with `extern let`. We said earlier that `Zier` does not use type signatures, this was a little white lie. `extern` declarations are the only place where `Zier` uses type signatures.
+We can do so by binding Erlang functions to `Mond` names with `extern let`. We said earlier that `Mond` does not use type signatures, this was a little white lie. `extern` declarations are the only place where `Mond` uses type signatures.
 
 ```
 (extern let system-time ~ (Unit -> Int) erlang/system_time)

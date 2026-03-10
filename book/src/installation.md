@@ -1,8 +1,8 @@
 # Installation
 
-Currently, the only way to install `Zier` is from source.
+Currently, the only way to install `Mond` is from source.
 
-`Zier`'s compiler is written in Rust. To install it, you'll need a `Rust` toolchain. To run `Zier` code, you'll need to install `erlang`, and to create a release you'll need `rebar3`.
+`Mond`'s compiler is written in Rust. To install it, you'll need a `Rust` toolchain. To run `Mond` code, you'll need to install `erlang`, and to create a release you'll need `rebar3`.
 
 To install everything on Arch Linux, run the following:
 
@@ -19,8 +19,8 @@ brew install rustup erlang rebar3
 Once you have those installed, you can clone this repo and run this in the root:
 ```
 
-cargo install --path zier 
+cargo install --path mond 
 ```
 
-Then you'll be able to use `Zier`.
+Then you'll be able to use `Mond`.
 

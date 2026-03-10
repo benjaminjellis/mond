@@ -11,7 +11,7 @@ The aim of Phase 1 is to have a stable and usable language. At completion the co
 - [ ] mvp standard library
 
 ## Phase 2
-The aim of Phase 2 is to make `Zier` more usable, primarily through completing the standard library, adding package management to the CLI and a basic lsp.
+The aim of Phase 2 is to make `Mond` more usable, primarily through completing the standard library, adding package management to the CLI and a basic lsp.
 
 - [ ] complete standard library
 - [ ] CLI tool handles package engagement
@@ -19,6 +19,6 @@ The aim of Phase 2 is to make `Zier` more usable, primarily through completing t
 - [ ] basic lsp (goto def, rename, errors)
 
 ## Phase 3
-The aim of Phase 3 is to make zier even more usable, primarily through further integration with OTP. 
+The aim of Phase 3 is to make mond even more usable, primarily through further integration with OTP. 
 
 - [ ] OTP / eralng libraries (e.g. gen server support, process support)

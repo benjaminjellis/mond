@@ -3,7 +3,7 @@
 
 Testing helpers are regular std functions and must be imported explicitly.
 
-```zier
+```mond
 (use std/string)
 (use std/result [bind])
 (use std/testing [assert_eq])

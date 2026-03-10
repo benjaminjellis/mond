@@ -1,10 +1,10 @@
 # The Standard Library
-`Zier`'s standard library is shipped with the CLI and its version is kept in lockstep. One release/version of the CLI will always use the same standard library.
+`Mond`'s standard library is shipped with the CLI and its version is kept in lockstep. One release/version of the CLI will always use the same standard library.
 
 The standard library is intended to provide the well tested building blocks the language and ecosystem needs to grow and succeed.
 
 ## Imports
-To get started with the standard library, we first need to introduce a new concept: imports. `Zier` defines the keyword `use`. Like everything in `Zier`, this lives inside an S-expression.
+To get started with the standard library, we first need to introduce a new concept: imports. `Mond` defines the keyword `use`. Like everything in `Mond`, this lives inside an S-expression.
 
 `(use std)` at the top of the file brings the module `std` into scope.
 
@@ -34,14 +34,14 @@ If you only want to bring in a subset of what's defined in a module and use it i
 
 The standard library also provides some useful types like `Option` and `Result`. It is idiomatic to import these in an unqualified manner. This also imports constructors like `None` and `Some`.
 
-```zier
+```mond
 (use std/result [Result])
 (use std/Option [Option])
 ```
 
 The language also provides some syntactic sugar like `let?`. `let?` is a monadic bind. It requires a `bind` function in scope and chains operations that return a `Result`, short-circuiting on the first error. This syntax can be used simply with `(use std/result [Result bind])`.
 
-```zier
+```mond
 (use std/result [Result bind])
 (use std/io)
 
@@ -64,6 +64,6 @@ This desugars to `(bind (might_fail) (f {a} -> (bind (also_might_fail a) (f {b} 
 ```
 
 ## Processes
-Because `Zier` targets the `BEAM` we can leverage it's model of concurrency. The basic building block of this are `processes`. 
+Because `Mond` targets the `BEAM` we can leverage it's model of concurrency. The basic building block of this are `processes`. 
 
 ## Unknown

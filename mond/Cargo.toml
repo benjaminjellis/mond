@@ -1,0 +1,18 @@
+[package]
+name = "mond"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+clap = { workspace = true , features = ["derive"] }
+eyre = { workspace = true }
+mondc = { path = "../mondc" }
+mond-format = { path = "../mond-format" }
+include_dir = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true }
+semver = { workspace = true, features = [ "serde" ] }
+walkdir = { workspace = true }
+codespan-reporting = { workspace = true }
+tokio = { version = "1", features = ["io-std", "rt-multi-thread"] }
+mond-lsp = { path = "../mond-lsp" }

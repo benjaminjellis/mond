@@ -104,6 +104,20 @@ pub fn compile_with_imports_in_session(
         };
     }
 
+    let duplicate_type_constructors =
+        warnings::duplicate_type_constructor_diagnostics(&decls, file_id);
+    for diag in &duplicate_type_constructors {
+        diagnostics.push(diag.clone());
+        sess.emit(&lowerer.files, diag);
+    }
+    if !duplicate_type_constructors.is_empty() {
+        return session::CompileReport {
+            output: None,
+            files: lowerer.files,
+            diagnostics,
+        };
+    }
+
     let mut checker = typecheck::TypeChecker::new();
     let mut env = typecheck::primitive_env();
 

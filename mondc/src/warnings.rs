@@ -672,6 +672,41 @@ pub(crate) fn duplicate_top_level_value_diagnostics(
     diags
 }
 
+pub(crate) fn duplicate_type_constructor_diagnostics(
+    decls: &[ast::Declaration],
+    file_id: usize,
+) -> Vec<Diagnostic<usize>> {
+    let mut seen: HashMap<String, std::ops::Range<usize>> = HashMap::new();
+    let mut diags = Vec::new();
+
+    for decl in decls {
+        if let ast::Declaration::Type(ast::TypeDecl::Variant {
+            constructors, span, ..
+        }) = decl
+        {
+            for (name, _) in constructors {
+                if let Some(first_span) = seen.get(name) {
+                    diags.push(
+                        Diagnostic::error()
+                            .with_message(format!("duplicate variant constructor `{name}`"))
+                            .with_labels(vec![
+                                Label::primary(file_id, span.clone()).with_message(format!(
+                                    "`{name}` is declared again in this type"
+                                )),
+                                Label::secondary(file_id, first_span.clone())
+                                    .with_message("first declared in this type"),
+                            ]),
+                    );
+                } else {
+                    seen.insert(name.clone(), span.clone());
+                }
+            }
+        }
+    }
+
+    diags
+}
+
 pub(crate) fn unused_function_spans(
     decls: &[ast::Declaration],
 ) -> Vec<(String, std::ops::Range<usize>)> {

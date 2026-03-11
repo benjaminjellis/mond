@@ -31,7 +31,7 @@ pub(crate) enum ProjectType {
 #[derive(Parser)]
 #[command(name = "mond")]
 #[command(version = VERSION)]
-#[command(about = "build tool for the mond programming language")]
+#[command(about = "the build tool for the mond programming language")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -43,7 +43,6 @@ enum Commands {
     Test,
     Lsp,
     Format {
-        /// File to format (formats all source files if omitted)
         #[arg(long)]
         path: Option<PathBuf>,
     },

@@ -8,7 +8,7 @@ use crate::{
     lexer::{Token, TokenKind},
     sexpr::SExpr,
 };
-use std::ops::Range;
+use std::{collections::HashMap, ops::Range};
 
 #[derive(Default)]
 pub struct Lowerer {
@@ -85,6 +85,7 @@ impl Lowerer {
         if is_record {
             // --- Lowering as a Record (Product Type) ---
             let mut fields = Vec::new();
+            let mut seen_fields: HashMap<String, Range<usize>> = HashMap::new();
             for item in body_items {
                 if let SExpr::Round(inner, _) = item {
                     for i in inner {
@@ -150,6 +151,23 @@ impl Lowerer {
                             &field_items[2..],
                             field_span.clone(),
                         )?;
+                        if let Some(first_span) =
+                            seen_fields.insert(field_name.clone(), name_token.span.clone())
+                        {
+                            self.error(
+                                Diagnostic::error()
+                                    .with_message(format!("duplicate record field `:{field_name}`"))
+                                    .with_labels(vec![
+                                        Label::primary(file_id, name_token.span.clone())
+                                            .with_message(format!(
+                                                "`:{field_name}` is declared again here"
+                                            )),
+                                        Label::secondary(file_id, first_span)
+                                            .with_message("first declared here"),
+                                    ]),
+                            );
+                            return None;
+                        }
                         fields.push((field_name.clone(), type_usage));
                     }
                 }
@@ -164,6 +182,7 @@ impl Lowerer {
         } else {
             // --- Lowering as a Variant (Sum Type) ---
             let mut constructors = Vec::new();
+            let mut seen_ctors: HashMap<String, Range<usize>> = HashMap::new();
             let Some(SExpr::Round(body_items, _)) = body_items.first() else {
                 self.error(
                     Diagnostic::error()
@@ -232,6 +251,24 @@ impl Lowerer {
 
                         let type_usage =
                             self.lower_type_usage_atoms(file_id, &inner[2..], inner_span.clone())?;
+                        if let Some(first_span) =
+                            seen_ctors.insert(c_name.clone(), name_token.span())
+                        {
+                            self.error(
+                                Diagnostic::error()
+                                    .with_message(format!(
+                                        "duplicate variant constructor `{c_name}`"
+                                    ))
+                                    .with_labels(vec![
+                                        Label::primary(file_id, name_token.span()).with_message(
+                                            format!("`{c_name}` is declared again here"),
+                                        ),
+                                        Label::secondary(file_id, first_span)
+                                            .with_message("first declared here"),
+                                    ]),
+                            );
+                            return None;
+                        }
                         constructors.push((c_name, Some(type_usage)));
                     }
                     // Case: None — nullary constructor (no payload)
@@ -247,6 +284,23 @@ impl Lowerer {
                                         .with_message(
                                             "expected a capitalised constructor name (e.g. None) or (Name ~ Type)",
                                         )]),
+                            );
+                            return None;
+                        }
+                        if let Some(first_span) = seen_ctors.insert(c_name.clone(), t.span.clone())
+                        {
+                            self.error(
+                                Diagnostic::error()
+                                    .with_message(format!(
+                                        "duplicate variant constructor `{c_name}`"
+                                    ))
+                                    .with_labels(vec![
+                                        Label::primary(file_id, t.span.clone()).with_message(
+                                            format!("`{c_name}` is declared again here"),
+                                        ),
+                                        Label::secondary(file_id, first_span)
+                                            .with_message("first declared here"),
+                                    ]),
                             );
                             return None;
                         }
@@ -2990,6 +3044,32 @@ mod tests {
         } else {
             panic!("expected Record TypeDecl");
         }
+    }
+
+    #[test]
+    fn test_duplicate_record_field_rejected() {
+        let src = "(type LotsOfFields ((:record ~ String) (:record ~ String)))";
+        let (mut lowerer, file_id, sexprs) = setup(src);
+        let decls = lowerer.lower_file(file_id, &sexprs);
+        assert!(decls.is_empty(), "expected lowering to fail");
+        assert_eq!(lowerer.diagnostics.len(), 1);
+        assert_eq!(
+            lowerer.diagnostics[0].message,
+            "duplicate record field `:record`"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_variant_constructor_rejected() {
+        let src = "(type LotsOVariants (One One Two))";
+        let (mut lowerer, file_id, sexprs) = setup(src);
+        let decls = lowerer.lower_file(file_id, &sexprs);
+        assert!(decls.is_empty(), "expected lowering to fail");
+        assert_eq!(lowerer.diagnostics.len(), 1);
+        assert_eq!(
+            lowerer.diagnostics[0].message,
+            "duplicate variant constructor `One`"
+        );
     }
 
     #[test]

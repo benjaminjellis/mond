@@ -78,6 +78,57 @@ fn duplicate_top_level_function_defs_error() {
 }
 
 #[test]
+fn duplicate_record_fields_error() {
+    let src = "(type LotsOfFields ((:record ~ String) (:record ~ String)))";
+    let result = compile_with_imports(
+        "main",
+        src,
+        "main.mond",
+        HashMap::new(),
+        &HashMap::new(),
+        HashMap::new(),
+        &[],
+        &HashMap::new(),
+    );
+    assert!(result.is_none());
+}
+
+#[test]
+fn duplicate_variant_constructors_error() {
+    let src = "(type LotsOVariants (One One Two (Three ~ Int)))";
+    let result = compile_with_imports(
+        "main",
+        src,
+        "main.mond",
+        HashMap::new(),
+        &HashMap::new(),
+        HashMap::new(),
+        &[],
+        &HashMap::new(),
+    );
+    assert!(result.is_none());
+}
+
+#[test]
+fn duplicate_variant_constructors_across_types_error() {
+    let src = r#"
+        (type DiffVariant (One Five (Six ~ String)))
+        (type LotsOVariants (One Two (Three ~ Int) Four Five (Six ~ String)))
+    "#;
+    let result = compile_with_imports(
+        "main",
+        src,
+        "main.mond",
+        HashMap::new(),
+        &HashMap::new(),
+        HashMap::new(),
+        &[],
+        &HashMap::new(),
+    );
+    assert!(result.is_none());
+}
+
+#[test]
 fn top_level_function_conflicts_with_unqualified_import() {
     let mut module_exports = HashMap::new();
     module_exports.insert("greetings".to_string(), vec!["hello".to_string()]);

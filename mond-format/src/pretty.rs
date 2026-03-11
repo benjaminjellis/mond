@@ -366,9 +366,6 @@ fn fmt_type(all: &[SExpr], mod_count: usize, rest: &[SExpr], source: &str) -> Do
 
 /// Format the body of a type declaration, including the outer `()`.
 ///
-/// Flat:  `(entry1 entry2)`
-/// Break: `(\n  entry1\n  entry2\n)`
-///
 /// Preserving the outer parens is essential for idempotency: without them the
 /// SExpr structure changes on re-parse and the second pass would produce
 /// different output.
@@ -377,13 +374,8 @@ fn fmt_type_body(items: &[SExpr], source: &str) -> Doc {
         return text("()");
     }
     let entries: Vec<Doc> = items.iter().map(|i| fmt(i, source)).collect();
-    let inner = join(line(), entries);
-    group(concat_all([
-        text("("),
-        nest(2, concat(line(), inner)),
-        line(),
-        text(")"),
-    ]))
+    let inner = join(hardline(), entries);
+    concat_all([text("("), nest(2, concat(hardline(), inner)), text(")")])
 }
 
 // ── if ────────────────────────────────────────────────────────────────────────

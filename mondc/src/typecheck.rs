@@ -111,6 +111,9 @@ pub enum TypeError {
         /// The file and span of the type definition, if known
         def: Option<(usize, std::ops::Range<usize>)>,
     },
+    NonExhaustiveMatch {
+        missing: Vec<String>,
+    },
     UnboundVariable(String, std::ops::Range<usize>),
 }
 
@@ -320,6 +323,18 @@ impl TypeError {
                 }
                 diags
             }
+            TypeError::NonExhaustiveMatch { missing } => vec![
+                Diagnostic::error()
+                    .with_message("non-exhaustive match")
+                    .with_labels(vec![
+                        Label::primary(file_id, span)
+                            .with_message("match is missing one or more constructors"),
+                    ])
+                    .with_notes(vec![format!(
+                        "missing patterns for: {}",
+                        missing.join(", ")
+                    )]),
+            ],
             TypeError::UnboundVariable(name, precise_span) => vec![
                 Diagnostic::error()
                     .with_message(format!("unbound variable `{name}`"))
@@ -569,6 +584,8 @@ pub struct TypeChecker {
     counter: u64,
     /// Maps type name → (file_id, definition span) for error reporting
     type_def_spans: HashMap<String, (usize, std::ops::Range<usize>)>,
+    /// Maps variant type name → constructor names for match exhaustiveness checks.
+    variant_constructors: HashMap<String, Vec<String>>,
     /// Maps value/function name → (file_id, definition span) for error reporting.
     value_def_spans: HashMap<String, (usize, std::ops::Range<usize>)>,
     /// Best-effort inferred types for expression spans, used by editor tooling.
@@ -580,6 +597,7 @@ impl TypeChecker {
         Self {
             counter: 0,
             type_def_spans: HashMap::new(),
+            variant_constructors: HashMap::new(),
             value_def_spans: HashMap::new(),
             expr_types: Vec::new(),
         }
@@ -602,6 +620,164 @@ impl TypeChecker {
             return;
         }
         self.expr_types.push((span, ty));
+    }
+
+    fn pattern_is_catch_all(pat: &Pattern) -> bool {
+        match pat {
+            Pattern::Any(_) | Pattern::Variable(_, _) => true,
+            Pattern::Or(pats, _) => pats.iter().any(Self::pattern_is_catch_all),
+            Pattern::Literal(_, _)
+            | Pattern::Constructor(_, _, _)
+            | Pattern::EmptyList(_)
+            | Pattern::Cons(_, _, _) => false,
+        }
+    }
+
+    fn collect_top_level_constructors<'a>(pat: &'a Pattern, out: &mut HashSet<&'a str>) {
+        match pat {
+            Pattern::Constructor(name, _, _) => {
+                out.insert(name.as_str());
+            }
+            Pattern::Or(pats, _) => {
+                for pat in pats {
+                    Self::collect_top_level_constructors(pat, out);
+                }
+            }
+            Pattern::Any(_)
+            | Pattern::Variable(_, _)
+            | Pattern::Literal(_, _)
+            | Pattern::EmptyList(_)
+            | Pattern::Cons(_, _, _) => {}
+        }
+    }
+
+    fn pattern_matches_empty_list(pat: &Pattern) -> bool {
+        match pat {
+            Pattern::EmptyList(_) => true,
+            Pattern::Or(pats, _) => pats.iter().any(Self::pattern_matches_empty_list),
+            Pattern::Any(_)
+            | Pattern::Variable(_, _)
+            | Pattern::Literal(_, _)
+            | Pattern::Constructor(_, _, _)
+            | Pattern::Cons(_, _, _) => false,
+        }
+    }
+
+    fn pattern_matches_non_empty_list(pat: &Pattern) -> bool {
+        match pat {
+            Pattern::Cons(_, _, _) => true,
+            Pattern::Or(pats, _) => pats.iter().any(Self::pattern_matches_non_empty_list),
+            Pattern::Any(_)
+            | Pattern::Variable(_, _)
+            | Pattern::Literal(_, _)
+            | Pattern::Constructor(_, _, _)
+            | Pattern::EmptyList(_) => false,
+        }
+    }
+
+    fn pattern_matches_bool(pat: &Pattern, expected: bool) -> bool {
+        match pat {
+            Pattern::Literal(Literal::Bool(value), _) => *value == expected,
+            Pattern::Or(pats, _) => pats
+                .iter()
+                .any(|pat| Self::pattern_matches_bool(pat, expected)),
+            Pattern::Any(_)
+            | Pattern::Variable(_, _)
+            | Pattern::Literal(_, _)
+            | Pattern::Constructor(_, _, _)
+            | Pattern::EmptyList(_)
+            | Pattern::Cons(_, _, _) => false,
+        }
+    }
+
+    fn ensure_match_exhaustive(
+        &self,
+        subst: &Substitution,
+        target_types: &[Rc<Type>],
+        arms: &[(Vec<Pattern>, Expr)],
+    ) -> Result<(), TypeError> {
+        if target_types.len() != 1 {
+            return Ok(());
+        }
+
+        if arms
+            .iter()
+            .any(|(pats, _)| pats.first().is_some_and(Self::pattern_is_catch_all))
+        {
+            return Ok(());
+        }
+
+        let resolved_target = apply_subst(subst, &target_types[0]);
+        match resolved_target.as_ref() {
+            Type::Con(type_name, args) if type_name == "List" && args.len() == 1 => {
+                let mut has_empty = false;
+                let mut has_cons = false;
+                for (pats, _) in arms {
+                    if let Some(pat) = pats.first() {
+                        has_empty |= Self::pattern_matches_empty_list(pat);
+                        has_cons |= Self::pattern_matches_non_empty_list(pat);
+                    }
+                }
+                let mut missing = Vec::new();
+                if !has_empty {
+                    missing.push("[]".into());
+                }
+                if !has_cons {
+                    missing.push("[head | tail]".into());
+                }
+                if missing.is_empty() {
+                    Ok(())
+                } else {
+                    Err(TypeError::NonExhaustiveMatch { missing })
+                }
+            }
+            Type::Con(type_name, _) if type_name == "Bool" => {
+                let mut seen_true = false;
+                let mut seen_false = false;
+                for (pats, _) in arms {
+                    if let Some(pat) = pats.first() {
+                        seen_true |= Self::pattern_matches_bool(pat, true);
+                        seen_false |= Self::pattern_matches_bool(pat, false);
+                    }
+                }
+                let mut missing = Vec::new();
+                if !seen_true {
+                    missing.push("True".into());
+                }
+                if !seen_false {
+                    missing.push("False".into());
+                }
+                if missing.is_empty() {
+                    Ok(())
+                } else {
+                    Err(TypeError::NonExhaustiveMatch { missing })
+                }
+            }
+            Type::Con(type_name, _) => {
+                let Some(constructors) = self.variant_constructors.get(type_name) else {
+                    return Ok(());
+                };
+
+                let mut covered = HashSet::new();
+                for (pats, _) in arms {
+                    if let Some(pat) = pats.first() {
+                        Self::collect_top_level_constructors(pat, &mut covered);
+                    }
+                }
+
+                let missing: Vec<String> = constructors
+                    .iter()
+                    .filter(|name| !covered.contains(name.as_str()))
+                    .cloned()
+                    .collect();
+                if missing.is_empty() {
+                    Ok(())
+                } else {
+                    Err(TypeError::NonExhaustiveMatch { missing })
+                }
+            }
+            Type::Fun(_, _) | Type::Var(_) => Ok(()),
+        }
     }
 
     pub fn inferred_expr_types(&self) -> &[(std::ops::Range<usize>, Rc<Type>)] {
@@ -899,6 +1075,7 @@ impl TypeChecker {
                         self.record_pattern_binding_types(pat, &subst, &pat_env);
                     }
                 }
+                self.ensure_match_exhaustive(&subst, &target_types, arms)?;
                 let ty = apply_subst(&subst, &result_ty);
                 self.record_expr_type(expr.span(), ty.clone());
                 Ok((subst.clone(), ty))
@@ -1259,6 +1436,15 @@ impl TypeChecker {
                     };
                     self.type_def_spans
                         .insert(type_name.clone(), (file_id, type_span.clone()));
+                    if let crate::ast::TypeDecl::Variant {
+                        name, constructors, ..
+                    } = type_decl
+                    {
+                        self.variant_constructors.insert(
+                            name.clone(),
+                            constructors.iter().map(|(name, _)| name.clone()).collect(),
+                        );
+                    }
                     env.extend(constructor_schemes(type_decl));
                 }
                 Declaration::Expression(expr) => {
@@ -2375,6 +2561,103 @@ mod tests {
             (let main {} (unwrap_or (Some 99) 0))
         "#;
         let ty = check(src).unwrap();
+        assert_eq!(ty, Type::int());
+    }
+
+    #[test]
+    fn reject_non_exhaustive_variant_match() {
+        let src = r#"
+            (type LotsOVariants (One Two (Three ~ Int) Four Five (Six ~ String)))
+            (let main {}
+              (let [x One]
+                (match x
+                  One ~> ()
+                  Two ~> ())))
+        "#;
+        let err = check(src).expect_err("expected non-exhaustive match");
+        match err {
+            TypeError::NonExhaustiveMatch { missing } => {
+                assert_eq!(missing, vec!["Three", "Four", "Five", "Six"]);
+            }
+            other => panic!("expected NonExhaustiveMatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accept_exhaustive_variant_match_with_or_pattern() {
+        let src = r#"
+            (type TrafficLight (Red Yellow Green))
+            (let to_int {light}
+              (match light
+                Red or Yellow ~> 0
+                Green ~> 1))
+            (let main {} (to_int Red))
+        "#;
+        let ty = check(src).unwrap();
+        assert_eq!(ty, Type::int());
+    }
+
+    #[test]
+    fn reject_non_exhaustive_list_match_missing_empty() {
+        let src = r#"
+            (let classify {xs}
+              (match xs
+                [h | t] ~> 1))
+            (let main {} (classify [1]))
+        "#;
+        let err = check(src).expect_err("expected non-exhaustive match");
+        match err {
+            TypeError::NonExhaustiveMatch { missing } => {
+                assert_eq!(missing, vec!["[]"]);
+            }
+            other => panic!("expected NonExhaustiveMatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reject_non_exhaustive_list_match_missing_cons() {
+        let src = r#"
+            (let classify {xs}
+              (match xs
+                [] ~> 0))
+            (let main {} (classify []))
+        "#;
+        let err = check(src).expect_err("expected non-exhaustive match");
+        match err {
+            TypeError::NonExhaustiveMatch { missing } => {
+                assert_eq!(missing, vec!["[head | tail]"]);
+            }
+            other => panic!("expected NonExhaustiveMatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accept_exhaustive_list_match() {
+        let src = r#"
+            (let classify {xs}
+              (match xs
+                [] ~> 0
+                [h | t] ~> 1))
+            (let main {} (classify []))
+        "#;
+        let ty = check(src).unwrap();
+        assert_eq!(ty, Type::int());
+    }
+
+    #[test]
+    fn reject_non_exhaustive_bool_match() {
+        let err = check_expr("(match True True ~> 1)").expect_err("expected non-exhaustive match");
+        match err {
+            TypeError::NonExhaustiveMatch { missing } => {
+                assert_eq!(missing, vec!["False"]);
+            }
+            other => panic!("expected NonExhaustiveMatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accept_exhaustive_bool_match_with_or_pattern() {
+        let ty = check_expr("(match True True or False ~> 1)").unwrap();
         assert_eq!(ty, Type::int());
     }
 

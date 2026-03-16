@@ -139,8 +139,6 @@ pub enum TokenKind {
     // Includes '.' so that float ops like +. -. *. /. lex as a single token
     #[regex(r"[\+\-\*/%=<>!&|\.]+")]
     Operator,
-
-    #[token("error")]
     Error,
 }
 
@@ -590,6 +588,23 @@ mod tests {
         let lexer = TokenKind::lexer(source);
         let tokens: Vec<_> = lexer.into_iter().map(|t| t.unwrap()).collect();
         assert_eq!(tokens, vec![LSquare]);
+    }
+
+    #[test]
+    fn error_is_lexed_as_identifier() {
+        let source = "error";
+        let lexer = TokenKind::lexer(source);
+        let tokens: Vec<_> = lexer.into_iter().map(|t| t.unwrap()).collect();
+        assert_eq!(tokens, vec![Ident]);
+    }
+
+    #[test]
+    fn unknown_char_still_becomes_error_token() {
+        let source = "@";
+        let lexer = crate::lexer::Lexer::new(source);
+        let tokens = lexer.lex();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].kind, Error);
     }
 
     #[test]

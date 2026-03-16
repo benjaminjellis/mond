@@ -63,6 +63,27 @@ fn qualified_std_call_requires_use() {
 }
 
 #[test]
+fn error_identifier_is_allowed_in_bindings() {
+    let src = "(let main {error} (match error _ ~> error))";
+    let result = compile_with_imports(
+        "main",
+        src,
+        "main.mond",
+        HashMap::new(),
+        &HashMap::new(),
+        HashMap::new(),
+        &[],
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    assert!(
+        result.is_some(),
+        "`error` should lex and lower as a normal identifier"
+    );
+}
+
+#[test]
 fn duplicate_unqualified_imports_error() {
     let mut module_exports = HashMap::new();
     module_exports.insert("a".to_string(), vec!["map".to_string()]);

@@ -588,7 +588,8 @@ fn fmt_match(rest: &[SExpr], source: &str) -> Doc {
                     nest(2, concat(line(), fmt(body, source))),
                 ])
             } else {
-                concat_all([head_doc, text(" ~> "), fmt(body, source)])
+                let body_doc = align(fmt(body, source));
+                concat_all([head_doc, text(" ~> "), body_doc])
             }
         })
         .collect();

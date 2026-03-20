@@ -61,6 +61,8 @@ enum Commands {
     Format {
         #[arg(long)]
         path: Option<PathBuf>,
+        #[arg(long)]
+        check: bool,
     },
     /// Create a new project in the provided directory
     New {
@@ -84,15 +86,15 @@ fn main() -> eyre::Result<()> {
         Commands::Build => {
             build::build(root, false)?;
         }
-        Commands::Format { path } => {
+        Commands::Format { path, check } => {
             if let Some(path) = path {
                 if path.is_file() {
                     format::format_fie(&path)?;
                 } else {
-                    format::format_dir(&path)?;
+                    format::format_dir(&path, check)?;
                 }
             } else {
-                format::format_project_dir(root)?;
+                format::format_project_dir(root, check)?;
             }
         }
         Commands::New { name, lib } => {

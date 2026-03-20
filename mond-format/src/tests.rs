@@ -191,6 +191,22 @@ fn nested_match_arm_body_breaks_after_arrow() {
     );
 }
 
+#[test]
+fn let_bind_match_arm_body_aligns_with_arrow() {
+    let src = "(let new_subject_for_actor {builder} (match (:name builder) None ~> (Ok (process/new_subject)) (Some name) ~> (let? [_ (try_register_self name)] (Ok (process/named_subject name)))))";
+    let out = fmt(src);
+    let expected = "(let new_subject_for_actor {builder}\n  (match (:name builder)\n    None ~> (Ok (process/new_subject))\n    (Some name) ~> (let? [_ (try_register_self name)]\n                     (Ok (process/named_subject name)))))\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn match_arm_wrapped_call_aligns_after_arrow() {
+    let src = "(match x _ ~> (some_really_long_function_name arg_one arg_two arg_three arg_four))";
+    let out = format(src, 40);
+    let expected = "(match x\n  _ ~> (some_really_long_function_name\n         arg_one\n         arg_two\n         arg_three\n         arg_four))\n";
+    assert_eq!(out, expected);
+}
+
 // ── type ──────────────────────────────────────────────────────────────────
 
 #[test]

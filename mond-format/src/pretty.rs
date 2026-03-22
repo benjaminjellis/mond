@@ -13,8 +13,9 @@ use crate::doc::*;
 /// from the lexer. Comments are attached to the form they immediately precede,
 /// preserving blank lines between consecutive comments.
 ///
-/// Comments *inside* a form (within its span) are dropped — this is a known
-/// limitation of operating at the SExpr level.
+/// When a top-level form contains comments inside its span, we preserve that
+/// entire form verbatim from the original source so in-form comments are not
+/// lost.
 pub fn format_sexprs(sexprs: &[SExpr], tokens: &[Token], source: &str, width: usize) -> String {
     // Collect comment/doc-comment tokens for fast lookup.
     let comments: Vec<&Token> = tokens
@@ -60,9 +61,15 @@ pub fn format_sexprs(sexprs: &[SExpr], tokens: &[Token], source: &str, width: us
         // Emit leading comments, preserving blank lines between consecutive ones.
         emit_comments(&leading, source, &mut output);
 
-        // Emit the formatted form.
-        let doc = fmt(sexpr, source);
-        output.push_str(render(&doc, width).trim_end_matches('\n'));
+        // Forms that contain comments inside their span are emitted verbatim.
+        // The SExpr representation discards comment placement within forms, so
+        // formatting these would otherwise drop those comments.
+        if has_inner_comments(sexpr, &comments) {
+            output.push_str(&source[sexpr.span()]);
+        } else {
+            let doc = fmt(sexpr, source);
+            output.push_str(render(&doc, width).trim_end_matches('\n'));
+        }
         output.push('\n');
     }
 
@@ -115,6 +122,13 @@ fn emit_comments(comments: &[&Token], source: &str, out: &mut String) {
         out.push_str(&source[comment.span.clone()]);
         out.push('\n');
     }
+}
+
+fn has_inner_comments(sexpr: &SExpr, comments: &[&Token]) -> bool {
+    let span = sexpr.span();
+    comments
+        .iter()
+        .any(|comment| comment.span.start > span.start && comment.span.end < span.end)
 }
 
 // ── Core dispatch ─────────────────────────────────────────────────────────────

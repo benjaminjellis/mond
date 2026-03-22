@@ -431,6 +431,28 @@ fn idempotent_with_comments() {
     );
 }
 
+#[test]
+fn in_form_comments_are_preserved() {
+    let src = "(pub let strip_extension {path}\n  (match (extension path)\n    (Ok ext) ~>\n      ;; Since the extension string doesn't have a leading `.`\n      ;; we drop a grapheme more to remove that as well.\n      (string/drop_end path (+ (string/length ext) 1))\n    (Error _) ~> path))";
+    let out = fmt(src);
+    assert!(
+        out.contains(";; Since the extension string doesn't have a leading `.`"),
+        "first in-form comment missing:\n{out}"
+    );
+    assert!(
+        out.contains(";; we drop a grapheme more to remove that as well."),
+        "second in-form comment missing:\n{out}"
+    );
+}
+
+#[test]
+fn in_form_comments_are_idempotent() {
+    let src = "(let commented {x}\n  (match x\n    1 ~>\n      ;; keep this comment\n      10\n    _ ~> 0))";
+    let once = fmt(src);
+    let twice = fmt(once.trim());
+    assert_eq!(once, twice, "not idempotent with in-form comments");
+}
+
 // ── real program ─────────────────────────────────────────────────────────
 
 #[test]

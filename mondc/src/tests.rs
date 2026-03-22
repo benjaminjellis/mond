@@ -124,6 +124,46 @@ fn duplicate_top_level_function_defs_error() {
 }
 
 #[test]
+fn top_level_forward_reference_compiles() {
+    let src = "(let main {} (helper 10))\n(let helper {x} (+ x 1))";
+    let result = compile_with_imports(
+        "main",
+        src,
+        "main.mond",
+        HashMap::new(),
+        &HashMap::new(),
+        HashMap::new(),
+        &[],
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    assert!(result.is_some(), "forward reference should type-check");
+}
+
+#[test]
+fn top_level_mutual_recursion_compiles() {
+    let src = r#"
+        (let even {n} (if (= n 0) True (odd (- n 1))))
+        (let odd  {n} (if (= n 0) False (even (- n 1))))
+        (let main {} (even 4))
+    "#;
+    let result = compile_with_imports(
+        "main",
+        src,
+        "main.mond",
+        HashMap::new(),
+        &HashMap::new(),
+        HashMap::new(),
+        &[],
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    assert!(result.is_some(), "mutual recursion should type-check");
+}
+
+#[test]
 fn duplicate_record_fields_error() {
     let src = "(type LotsOfFields [(:record ~ String) (:record ~ String)])";
     let result = compile_with_imports(

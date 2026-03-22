@@ -572,20 +572,18 @@ fn fmt_pipe(rest: &[SExpr], source: &str) -> Doc {
 // ── match ─────────────────────────────────────────────────────────────────────
 
 fn fmt_match(rest: &[SExpr], source: &str) -> Doc {
-    // rest = [target, pat... ~> expr, pat... ~> expr, ...]
-    // Assume single target (first item); the rest are arms.
+    // rest = [target..., arm...]
     if rest.is_empty() {
         return fmt_generic_with_head("match", rest, source);
     }
 
-    let target = &rest[0];
-    let arms_raw = &rest[1..];
-    let arms = collect_match_arms(arms_raw);
+    let SplitMatchTargetsAndArmsResult(targets, arms) = split_match_targets_and_arms(rest);
 
     if arms.is_empty() {
         return fmt_generic_with_head("match", rest, source);
     }
 
+    let targets_doc = join(text(" "), targets.iter().map(|s| fmt(s, source)).collect());
     let arm_docs: Vec<Doc> = arms
         .into_iter()
         .map(|(pats, guard, body)| {
@@ -610,7 +608,7 @@ fn fmt_match(rest: &[SExpr], source: &str) -> Doc {
 
     concat_all([
         text("(match "),
-        fmt(target, source),
+        targets_doc,
         nest(
             2,
             concat_all(
@@ -622,6 +620,84 @@ fn fmt_match(rest: &[SExpr], source: &str) -> Doc {
         ),
         text(")"),
     ])
+}
+
+struct SplitMatchTargetsAndArmsResult<'a>(Vec<&'a SExpr>, Arms<'a>);
+
+struct Arms<'a>(Vec<(Vec<&'a SExpr>, Option<&'a SExpr>, &'a SExpr)>);
+
+impl<'a> Arms<'a> {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn into_iter(self) -> std::vec::IntoIter<(Vec<&'a SExpr>, Option<&'a SExpr>, &'a SExpr)> {
+        self.0.into_iter()
+    }
+}
+
+fn split_match_targets_and_arms<'a>(rest: &'a [SExpr]) -> SplitMatchTargetsAndArmsResult<'a> {
+    if rest.is_empty() {
+        return SplitMatchTargetsAndArmsResult(vec![], Arms(vec![]));
+    }
+
+    // Prefer multi-target parsing where possible. Fall back to single-target
+    // parsing to preserve existing support for single-target `|` patterns.
+    let max_targets = rest.len().saturating_sub(1).min(8);
+    for n_targets in (2..=max_targets).rev() {
+        let targets: Vec<&SExpr> = rest[..n_targets].iter().collect();
+        let arms_raw = &rest[n_targets..];
+        if let Some(arms) = collect_match_arms_n_targets(arms_raw, n_targets)
+            && !arms.is_empty()
+        {
+            return SplitMatchTargetsAndArmsResult(targets, arms);
+        }
+    }
+
+    SplitMatchTargetsAndArmsResult(vec![&rest[0]], Arms(collect_match_arms(&rest[1..])))
+}
+
+fn collect_match_arms_n_targets<'a>(items: &'a [SExpr], n_targets: usize) -> Option<Arms<'a>> {
+    if n_targets < 2 {
+        return None;
+    }
+
+    let mut arms = Vec::new();
+    let mut i = 0;
+
+    while i < items.len() {
+        let mut patterns = Vec::with_capacity(n_targets);
+        for _ in 0..n_targets {
+            if i >= items.len() {
+                return None;
+            }
+            if matches!(&items[i], SExpr::Atom(t) if t.kind == TokenKind::Arrow) {
+                return None;
+            }
+            patterns.push(&items[i]);
+            i += 1;
+        }
+
+        let mut guard = None;
+        if i + 1 < items.len() && matches!(&items[i], SExpr::Atom(t) if t.kind == TokenKind::If) {
+            guard = Some(&items[i + 1]);
+            i += 2;
+        }
+
+        if i >= items.len() || !matches!(&items[i], SExpr::Atom(t) if t.kind == TokenKind::Arrow) {
+            return None;
+        }
+        i += 1; // skip ~>
+
+        if i >= items.len() {
+            return None;
+        }
+        let body = &items[i];
+        i += 1;
+        arms.push((patterns, guard, body));
+    }
+
+    Some(Arms(arms))
 }
 
 fn arm_body_forces_line_break(body: &SExpr) -> bool {

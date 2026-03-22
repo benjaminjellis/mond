@@ -178,6 +178,16 @@ fn match_guard_arm_formats_inline() {
 }
 
 #[test]
+fn match_multi_target_keeps_targets_on_same_line() {
+    let src = "(match left right _ \"/\" ~> left \"\" _ ~> (relative right))";
+    let out = fmt(src);
+    assert!(
+        out.starts_with("(match left right\n"),
+        "expected both match targets on one line:\n{out}"
+    );
+}
+
+#[test]
 fn nested_match_arm_body_breaks_after_arrow() {
     let src = "(match (self) me ~> (match (spawn (f {} -> (worker me))) pid ~> (do (send pid \"ping\") (match (receive_timeout 1000) (Ok x) ~> (do (io/println \"main got reply~n\") (io/debug x)) (Error _) ~> (io/println \"timed out~n\")))))";
     let out = fmt(src);

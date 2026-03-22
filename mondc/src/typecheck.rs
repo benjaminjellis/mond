@@ -2399,10 +2399,11 @@ impl TypeChecker {
 // ---------------------------------------------------------------------------
 
 impl TypeChecker {
-    /// Type-check a sequence of declarations in order, threading the environment.
+    /// Type-check a module worth of declarations.
     ///
-    /// Returns `Ok(last_type)` if all declarations pass, or `Err((error, expr))` on
-    /// the first failure, where `expr` is the expression that caused the error.
+    /// Top-level value declarations are treated as a single recursive group so
+    /// declaration order does not matter for references between top-level
+    /// functions.
     pub fn check_program(
         &mut self,
         env: &mut TypeEnv,
@@ -2413,7 +2414,11 @@ impl TypeChecker {
 
         let mut last_ty = Type::unit();
 
-        for decl in decls {
+        let mut top_level_let_decl_indices = Vec::new();
+        let mut inferred_top_level_raw_by_decl: HashMap<usize, Rc<Type>> = HashMap::new();
+
+        // Pass 1: seed order-independent top-level declarations.
+        for (decl_idx, decl) in decls.iter().enumerate() {
             match decl {
                 Declaration::Type(type_decl) => {
                     let (type_name, type_span) = match type_decl {
@@ -2457,46 +2462,6 @@ impl TypeChecker {
                         env.insert(name, scheme);
                     }
                 }
-                Declaration::Expression(expr) => {
-                    match self.infer(env, expr) {
-                        Ok((s, ty, preds)) => {
-                            let mut ty = ty;
-                            let mut preds = apply_subst_preds(&s, &preds);
-                            self.apply_expr_type_subst(&s);
-                            *env = apply_subst_env(&s, env);
-                            let (s_pred, solved_preds) = match self.solve_predicates(env, &preds) {
-                                Ok(result) => result,
-                                Err(error) => return Err(Box::new((error, expr.clone()))),
-                            };
-                            self.apply_expr_type_subst(&s_pred);
-                            *env = apply_subst_env(&s_pred, env);
-                            ty = apply_subst(&s_pred, &ty);
-                            preds = apply_subst_preds(&s_pred, &solved_preds);
-                            // Named top-level functions must be available to subsequent declarations.
-                            // 0-arg functions (let f {} body) are compiled as f(_Unit) -> body on
-                            // the BEAM, so store them as Unit -> ReturnType in the env so that
-                            // 0-arg call sites `(f)` unify correctly.
-                            if let Expr::LetFunc { name, args, .. } = expr {
-                                self.value_def_spans
-                                    .insert(name.clone(), (file_id, expr.span()));
-                                let env_ty = if args.is_empty() {
-                                    Type::fun(Type::unit(), ty.clone())
-                                } else {
-                                    ty.clone()
-                                };
-                                let scheme = generalize(env, &env_ty, &preds);
-                                env.insert(name.clone(), scheme);
-                            } else if let Some(pred) = preds.first() {
-                                return Err(Box::new((
-                                    self.unresolved_predicate_error(pred),
-                                    expr.clone(),
-                                )));
-                            }
-                            last_ty = ty;
-                        }
-                        Err(error) => return Err(Box::new((error, expr.clone()))),
-                    }
-                }
                 Declaration::ExternLet {
                     name,
                     name_span,
@@ -2513,8 +2478,135 @@ impl TypeChecker {
                     self.record_expr_type(name_span.clone(), scheme.ty.clone());
                     env.insert(name.clone(), scheme);
                 }
-                Declaration::ExternType { .. } | Declaration::Use { .. } => {
-                    // Not yet handled by the typechecker.
+                Declaration::Expression(Expr::LetFunc {
+                    name,
+                    args,
+                    name_span,
+                    ..
+                }) => {
+                    top_level_let_decl_indices.push(decl_idx);
+                    self.value_def_spans
+                        .insert(name.clone(), (file_id, name_span.clone()));
+
+                    // Predeclare a monomorphic placeholder for recursive-group inference.
+                    let ret_ty = self.fresh();
+                    let provisional = args
+                        .iter()
+                        .map(|_| self.fresh())
+                        .rev()
+                        .fold(ret_ty, |acc, arg| Type::fun(arg, acc));
+                    let env_ty = if args.is_empty() {
+                        Type::fun(Type::unit(), provisional)
+                    } else {
+                        provisional
+                    };
+                    self.record_expr_type(name_span.clone(), env_ty.clone());
+                    env.insert(
+                        name.clone(),
+                        Scheme {
+                            vars: vec![],
+                            preds: vec![],
+                            ty: env_ty,
+                        },
+                    );
+                }
+                Declaration::Expression(_)
+                | Declaration::ExternType { .. }
+                | Declaration::Use { .. } => {}
+                Declaration::Test { .. } => {}
+            }
+        }
+
+        // Pass 2: infer each top-level let body against the shared recursive group.
+        for decl_idx in &top_level_let_decl_indices {
+            let Some(Declaration::Expression(expr)) = decls.get(*decl_idx) else {
+                continue;
+            };
+            let Expr::LetFunc { name, args, .. } = expr else {
+                continue;
+            };
+
+            match self.infer(env, expr) {
+                Ok((s, mut ty, preds)) => {
+                    let mut preds = apply_subst_preds(&s, &preds);
+                    self.apply_expr_type_subst(&s);
+                    *env = apply_subst_env(&s, env);
+                    let (s_pred, solved_preds) = match self.solve_predicates(env, &preds) {
+                        Ok(result) => result,
+                        Err(error) => return Err(Box::new((error, expr.clone()))),
+                    };
+                    self.apply_expr_type_subst(&s_pred);
+                    *env = apply_subst_env(&s_pred, env);
+                    ty = apply_subst(&s_pred, &ty);
+                    preds = apply_subst_preds(&s_pred, &solved_preds);
+
+                    let mut env_ty = if args.is_empty() {
+                        Type::fun(Type::unit(), ty.clone())
+                    } else {
+                        ty.clone()
+                    };
+                    let declared_ty = env
+                        .get(name)
+                        .map(|scheme| scheme.ty.clone())
+                        .expect("predeclared top-level function should exist in env");
+                    let s_decl = unify(&declared_ty, &env_ty).map_err(|error| {
+                        Box::new((mismatch_with_span(error, expr.span()), expr.clone()))
+                    })?;
+                    self.apply_expr_type_subst(&s_decl);
+                    *env = apply_subst_env(&s_decl, env);
+                    ty = apply_subst(&s_decl, &ty);
+                    env_ty = apply_subst(&s_decl, &env_ty);
+                    preds = apply_subst_preds(&s_decl, &preds);
+
+                    let mut generalize_env = env.clone();
+                    generalize_env.remove(name);
+                    let scheme = generalize(&generalize_env, &env_ty, &preds);
+                    env.insert(name.clone(), scheme);
+                    inferred_top_level_raw_by_decl.insert(*decl_idx, ty);
+                }
+                Err(error) => return Err(Box::new((error, expr.clone()))),
+            }
+        }
+
+        // Pass 4: check remaining top-level declarations in source order and compute last_ty.
+        for (decl_idx, decl) in decls.iter().enumerate() {
+            match decl {
+                Declaration::Type(_)
+                | Declaration::ExternLet { .. }
+                | Declaration::ExternType { .. }
+                | Declaration::Use { .. } => {}
+                Declaration::Expression(expr) => {
+                    if matches!(expr, Expr::LetFunc { .. }) {
+                        if let Some(ty) = inferred_top_level_raw_by_decl.get(&decl_idx) {
+                            last_ty = ty.clone();
+                        }
+                        continue;
+                    }
+
+                    match self.infer(env, expr) {
+                        Ok((s, ty, preds)) => {
+                            let mut ty = ty;
+                            let mut preds = apply_subst_preds(&s, &preds);
+                            self.apply_expr_type_subst(&s);
+                            *env = apply_subst_env(&s, env);
+                            let (s_pred, solved_preds) = match self.solve_predicates(env, &preds) {
+                                Ok(result) => result,
+                                Err(error) => return Err(Box::new((error, expr.clone()))),
+                            };
+                            self.apply_expr_type_subst(&s_pred);
+                            *env = apply_subst_env(&s_pred, env);
+                            ty = apply_subst(&s_pred, &ty);
+                            preds = apply_subst_preds(&s_pred, &solved_preds);
+                            if let Some(pred) = preds.first() {
+                                return Err(Box::new((
+                                    self.unresolved_predicate_error(pred),
+                                    expr.clone(),
+                                )));
+                            }
+                            last_ty = ty;
+                        }
+                        Err(error) => return Err(Box::new((error, expr.clone()))),
+                    }
                 }
                 Declaration::Test { name, body, span } => {
                     // Result is ['a 'e] — ok first, error second
@@ -4210,19 +4302,24 @@ mod tests {
     }
 
     #[test]
-    fn reject_mutual_recursion_unbound() {
-        // Mutual recursion is not currently supported — `odd` is unbound inside `even`'s body
+    fn accept_mutual_recursion() {
         let src = r#"
             (let even {n} (if (= n 0) True (odd (- n 1))))
             (let odd  {n} (if (= n 0) False (even (- n 1))))
             (let main {} (even 4))
         "#;
-        let result = check(src);
-        assert!(
-            matches!(result, Err(TypeError::UnboundVariable(ref s, _)) if s == "odd"),
-            "expected UnboundVariable(odd), got {:?}",
-            result
-        );
+        let ty = check(src).unwrap();
+        assert_eq!(ty, Type::bool());
+    }
+
+    #[test]
+    fn accept_forward_reference_to_later_top_level_function() {
+        let src = r#"
+            (let main {} (helper 10))
+            (let helper {x} (+ x 1))
+        "#;
+        let ty = check(src).unwrap();
+        assert_eq!(ty, Type::fun(Type::int(), Type::int()));
     }
 
     // -------------------------------------------------------------------------

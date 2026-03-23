@@ -111,6 +111,7 @@ pub enum TypeError {
         arm: usize,
         expected: Rc<Type>,
         found: Rc<Type>,
+        from_letq_desugar: bool,
     },
     ConditionNotBool {
         found: Rc<Type>,
@@ -307,12 +308,28 @@ impl TypeError {
                 arm,
                 expected,
                 found,
+                from_letq_desugar,
             } => {
                 let mut var_names = std::collections::HashMap::new();
                 let expected_s = type_display_inner(expected, &mut var_names);
                 let found_s = type_display_inner(found, &mut var_names);
                 // arm is 0-indexed; arm 0 sets the expected type, conflict is at arm N
                 let conflicting = arm + 1;
+                if *from_letq_desugar {
+                    return vec![
+                        Diagnostic::error()
+                            .with_message("`let?` body must return a `Result`")
+                            .with_labels(vec![Label::primary(file_id, span).with_message(
+                                "the `let?` continuation and propagated `Error` branch must return the same type",
+                            )])
+                            .with_notes(vec![
+                                format!("  `let?` continuation returns: `{expected_s}`"),
+                                format!("  propagated `Error` branch returns: `{found_s}`"),
+                                "hint: return `(Ok value)` from the `let?` body".into(),
+                                "internally, `let?` desugars to a `match` on `Ok`/`Error`".into(),
+                            ]),
+                    ];
+                }
                 vec![
                     Diagnostic::error()
                         .with_message("match arms have incompatible types")
@@ -856,6 +873,44 @@ fn lookup_record_accessor<'a>(
 ) -> Option<&'a Scheme> {
     env.get(&record_accessor_key(record_name, field_name))
         .or_else(|| env.get(&format!(":{field_name}")))
+}
+
+fn is_desugared_letq_match(arms: &[MatchArm]) -> bool {
+    if arms.len() != 2 {
+        return false;
+    }
+    let ok_arm = &arms[0];
+    let err_arm = &arms[1];
+    if ok_arm.guard.is_some() || err_arm.guard.is_some() {
+        return false;
+    }
+    if ok_arm.patterns.len() != 1 || err_arm.patterns.len() != 1 {
+        return false;
+    }
+
+    let ok_pat = &ok_arm.patterns[0];
+    let err_pat = &err_arm.patterns[0];
+    if !matches!(ok_pat, Pattern::Constructor(name, args, _) if name == "Ok" && args.len() == 1) {
+        return false;
+    }
+
+    let err_name = match err_pat {
+        Pattern::Constructor(name, args, _) if name == "Error" && args.len() == 1 => {
+            match &args[0] {
+                Pattern::Variable(name, _) if name == "__letq_error" => name,
+                _ => return false,
+            }
+        }
+        _ => return false,
+    };
+
+    match &err_arm.body {
+        Expr::Call { func, args, .. } if args.len() == 1 => {
+            matches!(func.as_ref(), Expr::Variable(name, _) if name == "Error")
+                && matches!(&args[0], Expr::Variable(name, _) if name == err_name)
+        }
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1624,6 +1679,7 @@ impl TypeChecker {
                 arms,
                 span,
             } => {
+                let from_letq_desugar = is_desugared_letq_match(arms);
                 let mut subst = HashMap::new();
                 let mut target_types = Vec::new();
                 let mut preds = vec![];
@@ -1678,6 +1734,7 @@ impl TypeChecker {
                         arm: arm_index,
                         expected: expected.clone(),
                         found: found.clone(),
+                        from_letq_desugar,
                     })?;
                     subst = compose_subst(&s_unify, &subst);
                     preds = apply_subst_preds(&s_unify, &preds);
@@ -4462,8 +4519,39 @@ mod tests {
         // Arms return different types: Int vs Bool
         let result = check_expr("(match True True ~> 1 False ~> False)");
         assert!(
-            matches!(result, Err(TypeError::ArmMismatch { arm: 1, .. })),
+            matches!(
+                result,
+                Err(TypeError::ArmMismatch {
+                    arm: 1,
+                    from_letq_desugar: false,
+                    ..
+                })
+            ),
             "expected ArmMismatch on arm 2, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn reject_letq_continuation_that_does_not_return_result() {
+        let src = r#"
+            (type ['a 'e] Result [
+                (Ok ~ 'a)
+                (Error ~ 'e)])
+            (let main {}
+              (let? [x (Ok 1)]
+                x))
+        "#;
+        let result = check(src);
+        assert!(
+            matches!(
+                result,
+                Err(TypeError::ArmMismatch {
+                    arm: 1,
+                    from_letq_desugar: true,
+                    ..
+                })
+            ),
+            "expected let? ArmMismatch on error arm, got {result:?}"
         );
     }
 

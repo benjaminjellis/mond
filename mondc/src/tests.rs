@@ -1048,7 +1048,7 @@ fn letq_reports_continuation_mismatch_without_bind_in_scope() {
     assert!(
         rendered
             .iter()
-            .any(|msg| msg.contains("match arms have incompatible types")),
+            .any(|msg| msg.contains("`let?` body must return a `Result`")),
         "unexpected diagnostics: {rendered:?}"
     );
 }
@@ -1150,16 +1150,14 @@ fn test_declaration_with_letq_reports_continuation_mismatch_without_bind_in_scop
     );
 
     assert!(report.has_errors(), "expected type error");
-    let labels: Vec<String> = report
-        .diagnostics
-        .iter()
-        .flat_map(|d| d.labels.iter().map(|l| l.message.clone()))
-        .collect();
     assert!(
-        labels
+        report
+            .diagnostics
             .iter()
-            .any(|msg| msg.contains("arms must all return the same type")),
-        "unexpected labels: {labels:?}"
+            .flat_map(|d| d.notes.iter())
+            .any(|note| note.contains("hint: return `(Ok value)` from the `let?` body")),
+        "unexpected diagnostics: {:?}",
+        report.diagnostics
     );
 }
 

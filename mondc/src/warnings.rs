@@ -223,6 +223,11 @@ fn pattern_is_wildcard_like(pat: &ast::Pattern) -> bool {
     }
 }
 
+fn constructor_name(name: &str) -> &str {
+    name.rsplit_once('/')
+        .map_or(name, |(_, constructor)| constructor)
+}
+
 fn pattern_summary(
     pat: &ast::Pattern,
     constructor_families: &HashMap<String, String>,
@@ -247,17 +252,18 @@ fn pattern_summary(
             }
         }
         ast::Pattern::Constructor(name, args, span) => {
+            let constructor = constructor_name(name);
             // `Ctor _`/`Ctor x` covers all values for that constructor branch, but
             // `Ctor (Nested ...)` and literal payload patterns do not.
             let covers_constructor = args.iter().all(pattern_is_wildcard_like);
             PatternSummary {
                 span: span.clone(),
-                key: covers_constructor.then(|| PatternKey::Constructor(name.clone())),
+                key: covers_constructor.then(|| PatternKey::Constructor(constructor.to_string())),
                 family_member: if covers_constructor {
-                    constructor_families.get(name).map(|type_name| {
+                    constructor_families.get(constructor).map(|type_name| {
                         (
                             MatchFamily::Variant(type_name.clone()),
-                            MatchMember::Constructor(name.clone()),
+                            MatchMember::Constructor(constructor.to_string()),
                         )
                     })
                 } else {

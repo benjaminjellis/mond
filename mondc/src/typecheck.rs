@@ -1241,10 +1241,15 @@ impl TypeChecker {
         }
     }
 
+    fn constructor_name(name: &str) -> &str {
+        name.rsplit_once('/')
+            .map_or(name, |(_, constructor)| constructor)
+    }
+
     fn collect_top_level_constructors<'a>(pat: &'a Pattern, out: &mut HashSet<&'a str>) {
         match pat {
             Pattern::Constructor(name, _, _) => {
-                out.insert(name.as_str());
+                out.insert(Self::constructor_name(name));
             }
             Pattern::Or(pats, _) => {
                 for pat in pats {

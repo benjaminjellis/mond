@@ -388,6 +388,108 @@ fn qualified_only_use_does_not_import_variant_constructors_unqualified() {
 }
 
 #[test]
+fn qualified_only_use_allows_qualified_constructor_value() {
+    let option_src = "(pub type ['a] Option [None (Some ~ 'a)])";
+    let std_mods = vec![(
+        "option".to_string(),
+        "mond_option".to_string(),
+        option_src.to_string(),
+    )];
+    let analysis = crate::build_project_analysis(&std_mods, &[]).expect("analysis");
+    let src = "(use option)\n(let main {} option/None)";
+    let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
+    let report = compile_with_imports_report(
+        "main",
+        src,
+        "main.mond",
+        resolved.imports,
+        &analysis.module_exports,
+        resolved.module_aliases,
+        &resolved.imported_type_decls,
+        &resolved.imported_extern_types,
+        &resolved.imported_field_indices,
+        &resolved.imported_schemes,
+    );
+    assert!(
+        !report.has_errors(),
+        "qualified constructor value should compile: {:?}",
+        report
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn qualified_only_use_allows_qualified_constructor_call() {
+    let option_src = "(pub type ['a] Option [None (Some ~ 'a)])";
+    let std_mods = vec![(
+        "option".to_string(),
+        "mond_option".to_string(),
+        option_src.to_string(),
+    )];
+    let analysis = crate::build_project_analysis(&std_mods, &[]).expect("analysis");
+    let src = "(use option)\n(let main {} (option/Some 1))";
+    let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
+    let report = compile_with_imports_report(
+        "main",
+        src,
+        "main.mond",
+        resolved.imports,
+        &analysis.module_exports,
+        resolved.module_aliases,
+        &resolved.imported_type_decls,
+        &resolved.imported_extern_types,
+        &resolved.imported_field_indices,
+        &resolved.imported_schemes,
+    );
+    assert!(
+        !report.has_errors(),
+        "qualified constructor call should compile: {:?}",
+        report
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn qualified_constructor_patterns_lower_and_typecheck() {
+    let option_src = "(pub type ['a] Option [None (Some ~ 'a)])";
+    let std_mods = vec![(
+        "option".to_string(),
+        "mond_option".to_string(),
+        option_src.to_string(),
+    )];
+    let analysis = crate::build_project_analysis(&std_mods, &[]).expect("analysis");
+    let src = "(use option)\n(let main {x} (match x option/None ~> 0 (option/Some y) ~> y))";
+    let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
+    let report = compile_with_imports_report(
+        "main",
+        src,
+        "main.mond",
+        resolved.imports,
+        &analysis.module_exports,
+        resolved.module_aliases,
+        &resolved.imported_type_decls,
+        &resolved.imported_extern_types,
+        &resolved.imported_field_indices,
+        &resolved.imported_schemes,
+    );
+    assert!(
+        !report.has_errors(),
+        "qualified constructor patterns should compile: {:?}",
+        report
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn importing_type_name_brings_variant_constructors_into_scope() {
     let result_src =
         "(pub type ['a 'e] Result [(Ok ~ 'a) (Error ~ 'e)])\n(pub let bind {m f} (f m))";

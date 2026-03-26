@@ -269,6 +269,12 @@ fn field_index_for_record(ctx: &Ctx, record_name: &str, field_name: &str) -> Opt
         .map(|position| position + 2)
 }
 
+fn constructor_tag(name: &str) -> String {
+    name.rsplit_once('/')
+        .map_or(name, |(_, constructor)| constructor)
+        .to_lowercase()
+}
+
 fn field_indices_for_label(ctx: &Ctx, field_name: &str) -> Vec<(String, usize)> {
     let mut out: Vec<(String, usize)> = ctx
         .field_indices
@@ -319,7 +325,7 @@ fn dynamic_field_access(
         .into_iter()
         .map(|(record_name, idx)| {
             (
-                ir::Pattern::Atom(record_name.to_lowercase()),
+                ir::Pattern::Atom(constructor_tag(&record_name)),
                 ir::Expr::RemoteCall(
                     "erlang".into(),
                     "element".into(),
@@ -386,7 +392,7 @@ fn dynamic_record_update(
         .into_iter()
         .map(|(record_name, idx)| {
             (
-                ir::Pattern::Atom(record_name.to_lowercase()),
+                ir::Pattern::Atom(constructor_tag(&record_name)),
                 ir::Expr::RemoteCall(
                     "erlang".into(),
                     "setelement".into(),
@@ -579,7 +585,7 @@ fn lower_expr_with_renames(
 
         ast::Expr::RecordConstruct { name, fields, .. } => {
             // {name, field1, field2, ...} — fields in declaration order
-            let tag = ir::Expr::Atom(name.to_lowercase());
+            let tag = ir::Expr::Atom(constructor_tag(name));
             let mut items = vec![tag];
             if let Some(layout) = ctx.record_layouts.get(name) {
                 let by_name: HashMap<String, &ast::Expr> = fields
@@ -649,6 +655,22 @@ fn lower_expr_with_renames(
             args,
             ..
         } => {
+            let constructor_name = format!("{module}/{function}");
+            if let Some(&arity) = ctx.constructors.get(&constructor_name) {
+                if arity == 0 && args.is_empty() {
+                    return ir::Expr::Atom(constructor_tag(&constructor_name));
+                }
+                if arity > 0 {
+                    let tag = ir::Expr::Atom(constructor_tag(&constructor_name));
+                    let mut items = vec![tag];
+                    items.extend(
+                        args.iter()
+                            .map(|a| lower_expr_with_renames(a, ctx, renames, fresh_idx)),
+                    );
+                    return ir::Expr::Tuple(items);
+                }
+            }
+
             let erl_module = ctx
                 .module_aliases
                 .get(module.as_str())
@@ -699,6 +721,19 @@ fn lower_call(
     }
 
     if let ast::Expr::Variable(name, _) = func {
+        // Constructor application: Ok x / option/Some x -> {ok, X}
+        if let Some(&arity) = ctx.constructors.get(name.as_str())
+            && arity > 0
+        {
+            let tag = ir::Expr::Atom(constructor_tag(name));
+            let mut items = vec![tag];
+            items.extend(
+                args.iter()
+                    .map(|a| lower_expr_with_renames(a, ctx, renames, fresh_idx)),
+            );
+            return ir::Expr::Tuple(items);
+        }
+
         // Qualified function variable (`module/function`) in call position.
         if let Some((module, function)) = name.split_once('/') {
             let erl_module = ctx
@@ -739,19 +774,6 @@ fn lower_call(
                 erl_op.to_string(),
                 Box::new(lower_expr_with_renames(&args[0], ctx, renames, fresh_idx)),
             );
-        }
-
-        // Constructor application: Ok x → {ok, X}
-        if let Some(&arity) = ctx.constructors.get(name.as_str())
-            && arity > 0
-        {
-            let tag = ir::Expr::Atom(name.to_lowercase());
-            let mut items = vec![tag];
-            items.extend(
-                args.iter()
-                    .map(|a| lower_expr_with_renames(a, ctx, renames, fresh_idx)),
-            );
-            return ir::Expr::Tuple(items);
         }
 
         // Imported function via `use` — emit as remote call
@@ -877,11 +899,11 @@ fn lower_variable(name: &str, ctx: &Ctx, renames: &HashMap<String, String>) -> i
     }
     // Nullary constructor → atom
     if let Some(&0) = ctx.constructors.get(name) {
-        return ir::Expr::Atom(name.to_lowercase());
+        return ir::Expr::Atom(constructor_tag(name));
     }
     // Non-nullary constructor in value position → curried lambda: fun(X0) -> {tag, X0} end
     if let Some(&arity) = ctx.constructors.get(name) {
-        let tag = ir::Expr::Atom(name.to_lowercase());
+        let tag = ir::Expr::Atom(constructor_tag(name));
         let params: Vec<String> = (0..arity).map(|i| format!("X{i}__")).collect();
         let mut items = vec![tag];
         items.extend(params.iter().map(|p| ir::Expr::Var(p.clone())));
@@ -940,9 +962,9 @@ fn lower_pattern(pat: &ast::Pattern, ctx: &Ctx, renames: &HashMap<String, String
         ast::Pattern::Constructor(name, sub_pats, _) => {
             let arity = ctx.constructors.get(name.as_str()).copied().unwrap_or(0);
             if arity == 0 {
-                ir::Pattern::Atom(name.to_lowercase())
+                ir::Pattern::Atom(constructor_tag(name))
             } else {
-                let tag = ir::Pattern::Atom(name.to_lowercase());
+                let tag = ir::Pattern::Atom(constructor_tag(name));
                 let mut items = vec![tag];
                 items.extend(sub_pats.iter().map(|p| lower_pattern(p, ctx, renames)));
                 ir::Pattern::Tuple(items)
@@ -961,7 +983,7 @@ fn lower_pattern(pat: &ast::Pattern, ctx: &Ctx, renames: &HashMap<String, String
                 by_name.insert(field_name.as_str(), pat);
             }
 
-            let mut items = vec![ir::Pattern::Atom(name.to_lowercase())];
+            let mut items = vec![ir::Pattern::Atom(constructor_tag(name))];
             if let Some(layout) = ctx.record_layouts.get(name) {
                 for field_name in layout {
                     let pat = by_name

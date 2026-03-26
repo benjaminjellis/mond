@@ -570,14 +570,23 @@ pub fn compile_with_imports_in_session_with_private_records(
     let mut imported_record_layouts: HashMap<String, Vec<String>> = HashMap::new();
     for type_decl in imported_type_decls {
         match type_decl {
-            ast::TypeDecl::Variant { constructors, .. } => {
+            ast::TypeDecl::Variant {
+                name, constructors, ..
+            } => {
+                let qualified_module = name.split_once('/').map(|(module, _)| module.to_string());
                 for (ctor_name, payload) in constructors {
-                    imported_constructors
-                        .insert(ctor_name.clone(), if payload.is_some() { 1 } else { 0 });
+                    let arity = if payload.is_some() { 1 } else { 0 };
+                    imported_constructors.insert(ctor_name.clone(), arity);
+                    if let Some(module) = &qualified_module {
+                        imported_constructors.insert(format!("{module}/{ctor_name}"), arity);
+                    }
                 }
             }
             ast::TypeDecl::Record { name, fields, .. } => {
                 imported_constructors.insert(name.clone(), fields.len());
+                if let Some((module, record_name)) = name.split_once('/') {
+                    imported_constructors.insert(format!("{module}/{record_name}"), fields.len());
+                }
                 for (i, (field_name, _)) in fields.iter().enumerate() {
                     merged_imported_field_indices.insert((name.clone(), field_name.clone()), i + 2);
                 }

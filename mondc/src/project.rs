@@ -289,6 +289,30 @@ pub fn resolve_imports_for_source(
                 }
             }
 
+            // Qualified constructors should be available whenever the module is in scope,
+            // even if types are not imported unqualified.
+            let qualified_type_aliases_for_module: HashMap<String, String> = type_decls
+                .iter()
+                .map(|type_decl| {
+                    let type_name = type_decl_name(type_decl).to_string();
+                    (format!("{mod_name}/{type_name}"), type_name)
+                })
+                .collect();
+            for type_decl in type_decls {
+                let constructor_schemes = crate::typecheck::constructor_schemes_with_aliases(
+                    type_decl,
+                    &qualified_type_aliases_for_module,
+                );
+                for (name, scheme) in constructor_schemes {
+                    if name.starts_with(':') {
+                        continue;
+                    }
+                    imported_schemes
+                        .entry(format!("{mod_name}/{name}"))
+                        .or_insert(scheme);
+                }
+            }
+
             // Field accessors (for example `:value`) should remain usable when a module is
             // referenced, even if constructors require explicit unqualified type import.
             for type_decl in type_decls {

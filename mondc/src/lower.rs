@@ -528,16 +528,26 @@ impl Lowerer {
             let SExpr::Atom(token) = sexpr else {
                 continue;
             };
-            if token.kind != TokenKind::Ident {
-                continue;
-            }
-
-            let name = self.source_at(file_id, token.span.clone()).to_string();
-            let is_constructor_like = name
-                .chars()
-                .next()
-                .map(|c| c.is_ascii_uppercase())
-                .unwrap_or(false);
+            let (name, is_constructor_like) = match &token.kind {
+                TokenKind::Ident => {
+                    let name = self.source_at(file_id, token.span.clone()).to_string();
+                    let is_constructor_like = name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_ascii_uppercase())
+                        .unwrap_or(false);
+                    (name, is_constructor_like)
+                }
+                TokenKind::QualifiedIdent((module, constructor)) => (
+                    format!("{module}/{constructor}"),
+                    constructor
+                        .chars()
+                        .next()
+                        .map(|c| c.is_ascii_uppercase())
+                        .unwrap_or(false),
+                ),
+                _ => continue,
+            };
             if !is_constructor_like {
                 continue;
             }
@@ -2111,6 +2121,17 @@ impl Lowerer {
                         Some(Pattern::Constructor(text.to_string(), vec![], span))
                     }
 
+                    // Qualified constructor in pattern (e.g. option/None)
+                    TokenKind::QualifiedIdent((module, constructor))
+                        if constructor.starts_with(|c: char| c.is_uppercase()) =>
+                    {
+                        Some(Pattern::Constructor(
+                            format!("{module}/{constructor}"),
+                            vec![],
+                            span,
+                        ))
+                    }
+
                     // Lower-case identifier -> Pattern::Variable binding
                     TokenKind::Ident => Some(Pattern::Variable(text.to_string(), span)),
 
@@ -2122,6 +2143,18 @@ impl Lowerer {
                         let raw = self.source_at(file_id, token.span.clone());
                         let s = raw[1..raw.len() - 1].to_string();
                         Some(Pattern::Literal(Literal::String(s), span))
+                    }
+
+                    TokenKind::QualifiedIdent(_) => {
+                        self.error(
+                            Diagnostic::error()
+                                .with_code("E005")
+                                .with_message("invalid pattern")
+                                .with_labels(vec![Label::primary(file_id, span).with_message(
+                                    "qualified patterns must reference constructors like `option/Some`",
+                                )]),
+                        );
+                        None
                     }
 
                     _ => {
@@ -2142,10 +2175,26 @@ impl Lowerer {
             }
 
             SExpr::Round(items, span) => {
-                if let [SExpr::Atom(token), rest @ ..] = items.as_slice()
-                    && let TokenKind::Ident = token.kind
-                {
-                    let name = self.source_at(file_id, token.span.clone()).to_string();
+                if let [SExpr::Atom(token), rest @ ..] = items.as_slice() {
+                    let name = match &token.kind {
+                        TokenKind::Ident => self.source_at(file_id, token.span.clone()).to_string(),
+                        TokenKind::QualifiedIdent((module, constructor)) => {
+                            format!("{module}/{constructor}")
+                        }
+                        _ => {
+                            self.error(
+                                Diagnostic::error()
+                                    .with_code("E005")
+                                    .with_message("invalid constructor pattern")
+                                    .with_labels(vec![
+                                        Label::primary(file_id, span.clone()).with_message(
+                                            "expected (ConstructorName <pattern>...)",
+                                        ),
+                                    ]),
+                            );
+                            return None;
+                        }
+                    };
                     let is_record_pattern = !rest.is_empty()
                         && rest.iter().step_by(2).all(|item| {
                             matches!(item, SExpr::Atom(t) if matches!(t.kind, TokenKind::NamedField(_)))

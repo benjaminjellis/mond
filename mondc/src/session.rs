@@ -100,7 +100,7 @@ impl CompilerSession {
         }
         let writer = StandardStream::stderr(default_color_choice());
         let config = codespan_reporting::term::Config::default();
-        term::emit_to_write_style(&mut writer.lock(), &config, files, diag).unwrap();
+        let _ = term::emit_to_write_style(&mut writer.lock(), &config, files, diag);
     }
 }
 
@@ -119,6 +119,6 @@ pub fn emit_compile_report_with_color(
         if !emit_warnings && diag.severity == Severity::Warning {
             continue;
         }
-        term::emit_to_write_style(&mut writer.lock(), &config, &report.files, diag).unwrap();
+        let _ = term::emit_to_write_style(&mut writer.lock(), &config, &report.files, diag);
     }
 }

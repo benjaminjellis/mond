@@ -1,5 +1,6 @@
 mod build;
 mod clean;
+mod compile_flow;
 mod deps;
 mod format;
 mod gitignore;

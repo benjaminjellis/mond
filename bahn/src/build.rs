@@ -9,7 +9,10 @@ use eyre::Context;
 use semver::Version;
 use walkdir::WalkDir;
 
-use crate::{DEBUG_BUILD_DIR, ProjectType, SOURCE_DIR, deps, manifest, ui, utils::find_mond_files};
+use crate::{
+    DEBUG_BUILD_DIR, ProjectType, SOURCE_DIR, compile_flow, deps, manifest, ui,
+    utils::find_mond_files,
+};
 
 const ERL_SOURCE_SUBDIR: &str = "erl";
 const ERL_BEAM_SUBDIR: &str = "ebin";
@@ -274,6 +277,7 @@ pub(crate) fn generate_erl_sources_with_roots(
     let dependency_mods = loaded_dependencies.modules.clone();
 
     let src_dir = project_dir.join(SOURCE_DIR);
+    // Collect any local Erlang helper files.
     let local_helper_erls = collect_local_helper_erls(&src_dir)?;
     let mond_files = find_mond_files(&src_dir);
 
@@ -366,47 +370,30 @@ pub(crate) fn generate_erl_sources_with_roots(
 
     // Phase 2: compile each user file with its resolved import map
     let mut erl_paths: Vec<PathBuf> = Vec::new();
-    let mut had_error = false;
-    for (module_name, source) in &selected_module_sources {
-        let resolved = mondc::resolve_imports_for_source(source, &module_exports, &analysis);
-        let erlang_module_name = resolved
-            .module_aliases
-            .get(module_name.as_str())
-            .cloned()
-            .unwrap_or_else(|| module_name.clone());
-
-        let report = mondc::compile_with_imports_report_with_private_records(
-            &erlang_module_name,
+    let source_compile_units: Vec<compile_flow::CompileUnit<'_>> = selected_module_sources
+        .iter()
+        .map(|(module_name, source)| compile_flow::CompileUnit {
+            output_module_name: module_aliases
+                .get(module_name.as_str())
+                .map(String::as_str)
+                .unwrap_or(module_name.as_str()),
             source,
-            &format!("{module_name}.mond"),
-            resolved.imports,
-            &module_exports,
-            resolved.module_aliases,
-            &resolved.imported_type_decls,
-            &resolved.imported_extern_types,
-            &resolved.imported_field_indices,
-            &resolved.imported_private_records,
-            &resolved.imported_schemes,
-        );
-        mondc::session::emit_compile_report_with_color(
-            &report,
-            true,
-            ui::diagnostic_color_choice(),
-        );
-        match report.output {
-            Some(erl_src) if !report.has_errors() => {
-                let erl_path = erl_dir.join(format!("{erlang_module_name}.erl"));
-                std::fs::write(&erl_path, erl_src)
-                    .with_context(|| format!("could not write {}", erl_path.display()))?;
-                erl_paths.push(erl_path);
-            }
-            _ => {
-                had_error = true;
-            }
+            source_label: format!("{module_name}.mond"),
+        })
+        .collect();
+    let (source_outputs, source_had_error) =
+        compile_flow::compile_units(&source_compile_units, &module_exports, &analysis, true);
+    for output in source_outputs {
+        if let Some(erl_source) = output.erl_source {
+            erl_paths.push(compile_flow::write_erl_output(
+                erl_dir,
+                &output.output_module_name,
+                &erl_source,
+            )?);
         }
     }
 
-    if had_error {
+    if source_had_error {
         return Err(eyre::eyre!("compilation failed; see diagnostics above"));
     }
 
@@ -414,61 +401,31 @@ pub(crate) fn generate_erl_sources_with_roots(
 
     let dependency_analysis =
         mondc::build_project_analysis(&dependency_mods, &[]).map_err(|err| eyre::eyre!(err))?;
-    let dependency_module_exports: HashMap<String, Vec<String>> = dependency_mods
+    let dependency_module_exports = compile_flow::dependency_module_exports(&dependency_mods);
+    let dependency_compile_units: Vec<compile_flow::CompileUnit<'_>> = selected_dependency_mods
         .iter()
-        .map(|(user_name, _, _)| {
-            (
-                user_name.clone(),
-                dependency_analysis
-                    .module_exports
-                    .get(user_name)
-                    .cloned()
-                    .unwrap_or_default(),
-            )
+        .map(|(_, erlang_name, source)| compile_flow::CompileUnit {
+            output_module_name: erlang_name.as_str(),
+            source,
+            source_label: format!("{erlang_name}.mond"),
         })
         .collect();
-
-    for (_, erlang_name, source) in &selected_dependency_mods {
-        let resolved = mondc::resolve_imports_for_source(
-            source,
-            &dependency_module_exports,
-            &dependency_analysis,
-        );
-
-        let report = mondc::compile_with_imports_report_with_private_records(
-            erlang_name,
-            source,
-            &format!("{erlang_name}.mond"),
-            resolved.imports,
-            &dependency_module_exports,
-            dependency_analysis.module_aliases.clone(),
-            &resolved.imported_type_decls,
-            &resolved.imported_extern_types,
-            &resolved.imported_field_indices,
-            &resolved.imported_private_records,
-            &resolved.imported_schemes,
-        );
-        mondc::session::emit_compile_report_with_color(
-            &report,
-            true,
-            ui::diagnostic_color_choice(),
-        );
-        match report.output {
-            Some(erl_src) if !report.has_errors() => {
-                let erl_path = erl_dir.join(format!("{erlang_name}.erl"));
-                std::fs::write(&erl_path, erl_src)
-                    .with_context(|| format!("could not write {}", erl_path.display()))?;
-                erl_paths.push(erl_path);
-            }
-            None => {
-                had_error = true;
-            }
-            Some(_) => {
-                had_error = true;
-            }
+    let (dependency_outputs, dependency_had_error) = compile_flow::compile_units(
+        &dependency_compile_units,
+        &dependency_module_exports,
+        &dependency_analysis,
+        true,
+    );
+    for output in dependency_outputs {
+        if let Some(erl_source) = output.erl_source {
+            erl_paths.push(compile_flow::write_erl_output(
+                erl_dir,
+                &output.output_module_name,
+                &erl_source,
+            )?);
         }
     }
-    if had_error {
+    if dependency_had_error {
         return Err(eyre::eyre!("compilation failed; see diagnostics above"));
     }
 

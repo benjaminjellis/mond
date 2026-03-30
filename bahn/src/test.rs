@@ -5,7 +5,7 @@ use eyre::Context;
 use crate::{
     TARGET_DIR, TEST_BUILD_DIR, TEST_DIR,
     build::{ErlSources, generate_erl_sources_with_roots, reachable_dependency_modules},
-    manifest, ui,
+    compile_flow, manifest, ui,
     utils::find_mond_files,
 };
 
@@ -120,10 +120,7 @@ pub(crate) fn test(project_dir: &Path) -> eyre::Result<()> {
 
     // Combined export map: dependencies + src + test modules
     let mut all_exports = module_exports.clone();
-    let dependency_module_exports: HashMap<String, Vec<String>> = dependency_mods
-        .iter()
-        .map(|(u, _, src)| (u.clone(), mondc::exported_names(src)))
-        .collect();
+    let dependency_module_exports = compile_flow::dependency_module_exports(&dependency_mods);
     for (k, v) in &dependency_module_exports {
         all_exports.entry(k.clone()).or_insert_with(|| v.clone());
     }
@@ -132,7 +129,6 @@ pub(crate) fn test(project_dir: &Path) -> eyre::Result<()> {
     }
 
     // Compile each test file
-    let mut had_error = false;
     let project = mondc::ProjectAnalysis {
         module_exports: all_exports.clone(),
         module_type_decls: module_type_decls.clone(),
@@ -143,54 +139,43 @@ pub(crate) fn test(project_dir: &Path) -> eyre::Result<()> {
     };
     // (module_name, Vec<(display_name, erlang_fn_name)>)
     let mut test_fns_by_module: Vec<(String, Vec<(String, String)>)> = Vec::new();
+    let test_compile_units: Vec<compile_flow::CompileUnit<'_>> = test_module_sources
+        .iter()
+        .map(|(module_name, source)| compile_flow::CompileUnit {
+            output_module_name: module_name.as_str(),
+            source,
+            source_label: format!("tests/{module_name}.mond"),
+        })
+        .collect();
+    let (test_outputs, test_had_error) =
+        compile_flow::compile_units(&test_compile_units, &all_exports, &project, true);
+    for output in test_outputs {
+        let Some(erl_source) = output.erl_source else {
+            continue;
+        };
+        let erl_path = erl_dir.join(format!("{}.erl", output.output_module_name));
+        if erl_path.exists() {
+            return Err(eyre::eyre!(
+                "Erlang module name collision: tests/{}.mond would overwrite {}",
+                output.output_module_name,
+                erl_path.display()
+            ));
+        }
+        erl_paths.push(compile_flow::write_erl_output(
+            &erl_dir,
+            &output.output_module_name,
+            &erl_source,
+        )?);
+    }
 
     for (module_name, source) in &test_module_sources {
-        let resolved = mondc::resolve_imports_for_source(source, &all_exports, &project);
-
-        let report = mondc::compile_with_imports_report_with_private_records(
-            module_name,
-            source,
-            &format!("tests/{module_name}.mond"),
-            resolved.imports,
-            &all_exports,
-            resolved.module_aliases,
-            &resolved.imported_type_decls,
-            &resolved.imported_extern_types,
-            &resolved.imported_field_indices,
-            &resolved.imported_private_records,
-            &resolved.imported_schemes,
-        );
-        mondc::session::emit_compile_report_with_color(
-            &report,
-            true,
-            ui::diagnostic_color_choice(),
-        );
-        match report.output {
-            Some(erl_src) if !report.has_errors() => {
-                let erl_path = erl_dir.join(format!("{module_name}.erl"));
-                if erl_path.exists() {
-                    return Err(eyre::eyre!(
-                        "Erlang module name collision: tests/{module_name}.mond would overwrite {}",
-                        erl_path.display()
-                    ));
-                }
-                std::fs::write(&erl_path, erl_src)
-                    .with_context(|| format!("could not write {}", erl_path.display()))?;
-                erl_paths.push(erl_path);
-            }
-            _ => {
-                had_error = true;
-            }
-        }
-
-        // Discover test declarations from source
         let test_fns = mondc::test_declarations(source);
         if !test_fns.is_empty() {
             test_fns_by_module.push((module_name.clone(), test_fns));
         }
     }
 
-    if had_error {
+    if test_had_error {
         return Err(eyre::eyre!(
             "test compilation failed; see diagnostics above"
         ));
@@ -213,8 +198,30 @@ pub(crate) fn test(project_dir: &Path) -> eyre::Result<()> {
 
     let dependency_analysis =
         mondc::build_project_analysis(&dependency_mods, &[]).map_err(|err| eyre::eyre!(err))?;
-    for (user_name, erlang_name, source) in &selected_test_dependency_mods {
-        let erl_path = erl_dir.join(format!("{erlang_name}.erl"));
+    let dependency_compile_units: Vec<compile_flow::CompileUnit<'_>> =
+        selected_test_dependency_mods
+            .iter()
+            .map(|(_, erlang_name, source)| compile_flow::CompileUnit {
+                output_module_name: erlang_name.as_str(),
+                source,
+                source_label: format!("{erlang_name}.mond"),
+            })
+            .collect();
+    let (dependency_outputs, dependency_had_error) = compile_flow::compile_units(
+        &dependency_compile_units,
+        &dependency_module_exports,
+        &dependency_analysis,
+        true,
+    );
+    for ((user_name, erlang_name, _), output) in selected_test_dependency_mods
+        .iter()
+        .zip(dependency_outputs.into_iter())
+    {
+        debug_assert_eq!(output.output_module_name, *erlang_name);
+        let Some(erl_source) = output.erl_source else {
+            continue;
+        };
+        let erl_path = erl_dir.join(format!("{}.erl", output.output_module_name));
         if erl_path.exists() {
             if erl_paths.iter().any(|p| p == &erl_path) {
                 continue; // already compiled by generate_erl_sources
@@ -224,44 +231,13 @@ pub(crate) fn test(project_dir: &Path) -> eyre::Result<()> {
                 erl_path.display()
             ));
         }
-
-        let resolved = mondc::resolve_imports_for_source(
-            source,
-            &dependency_module_exports,
-            &dependency_analysis,
-        );
-
-        let report = mondc::compile_with_imports_report_with_private_records(
-            erlang_name,
-            source,
-            &format!("{erlang_name}.mond"),
-            resolved.imports,
-            &dependency_module_exports,
-            dependency_analysis.module_aliases.clone(),
-            &resolved.imported_type_decls,
-            &resolved.imported_extern_types,
-            &resolved.imported_field_indices,
-            &resolved.imported_private_records,
-            &resolved.imported_schemes,
-        );
-        mondc::session::emit_compile_report_with_color(
-            &report,
-            true,
-            ui::diagnostic_color_choice(),
-        );
-        if report.has_errors() {
-            had_error = true;
-            continue;
-        }
-        if let Some(erl_src) = report.output {
-            std::fs::write(&erl_path, erl_src)
-                .with_context(|| format!("could not write {}", erl_path.display()))?;
-            erl_paths.push(erl_path);
-        } else {
-            had_error = true;
-        }
+        erl_paths.push(compile_flow::write_erl_output(
+            &erl_dir,
+            &output.output_module_name,
+            &erl_source,
+        )?);
     }
-    if had_error {
+    if dependency_had_error {
         return Err(eyre::eyre!(
             "test compilation failed; see diagnostics above"
         ));

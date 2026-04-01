@@ -127,6 +127,28 @@ fn find_top_level_definition_range_points_at_function_name() {
 }
 
 #[test]
+fn find_top_level_definition_range_points_at_variant_constructor() {
+    let src = "(pub type ['a 'e] Result [(Ok ~ 'a) (Error ~ 'e)])\n";
+    let start = src.find("Ok").unwrap();
+    let range = find_top_level_definition_range(Path::new("src/result.mond"), src, "Ok").unwrap();
+    assert_eq!(
+        range,
+        Some(byte_range_to_lsp_range(src, start, start + "Ok".len()))
+    );
+}
+
+#[test]
+fn find_top_level_definition_range_points_at_record_type_name() {
+    let src = "(type Point [(:x ~ Int) (:y ~ Int)])\n";
+    let start = src.find("Point").unwrap();
+    let range = find_top_level_definition_range(Path::new("src/main.mond"), src, "Point").unwrap();
+    assert_eq!(
+        range,
+        Some(byte_range_to_lsp_range(src, start, start + "Point".len()))
+    );
+}
+
+#[test]
 fn symbol_at_resolves_top_level_definition_site() {
     let src = "(let add_one {x} (+ x 1))\n(let main {} (add_one 2))";
     let imports = mondc::ResolvedImports {
@@ -150,6 +172,177 @@ fn symbol_at_resolves_top_level_definition_site() {
             function: "add_one".to_string(),
         }
     );
+}
+
+#[test]
+fn symbol_at_resolves_imported_variant_constructor_pattern() {
+    let root = unique_temp_root();
+    write_project_file(&root, "bahn.toml", "[package]\nname = \"demo\"\n");
+    write_project_file(
+        &root,
+        "target/deps/result/src/lib.mond",
+        "(pub type ['a 'e] Result [(Ok ~ 'a) (Error ~ 'e)])\n",
+    );
+    write_project_file(
+        &root,
+        "src/main.mond",
+        "(use result [Result])\n(let main {files}\n  (match files\n    (Ok values) ~> values\n    (Error err) ~> []))\n",
+    );
+    let result_path = root.join("target/deps/result/src/lib.mond");
+    let result_src = "(pub type ['a 'e] Result [(Ok ~ 'a) (Error ~ 'e)])\n";
+    let main_src = "(use result [Result])\n(let main {files}\n  (match files\n    (Ok values) ~> values\n    (Error err) ~> []))\n";
+
+    let project = test_project(
+        BTreeMap::from([(
+            "result".to_string(),
+            ModuleSource {
+                name: "result".to_string(),
+                path: result_path.clone(),
+                source: result_src.to_string(),
+            },
+        )]),
+        BTreeMap::from([(
+            "main".to_string(),
+            ModuleSource {
+                name: "main".to_string(),
+                path: root.join("src/main.mond"),
+                source: main_src.to_string(),
+            },
+        )]),
+        BTreeMap::new(),
+        None,
+    );
+    let doc = project
+        .document_for_path(&root.join("src/main.mond"))
+        .expect("main doc");
+    let analysis = project
+        .analyze_document_with_options(&doc, false, false)
+        .expect("document analysis");
+    let offset = main_src.find("(Ok values)").unwrap() + 1;
+    let symbol = symbol_at(&doc.path, &doc.source, &doc.name, &analysis.imports, offset)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        symbol,
+        Symbol {
+            module: "result".to_string(),
+            function: "Ok".to_string(),
+        }
+    );
+
+    let location = project
+        .definition_location(&symbol.module, &symbol.function)
+        .expect("definition location")
+        .expect("constructor location");
+    assert_eq!(
+        location.range,
+        byte_range_to_lsp_range(
+            result_src,
+            result_src.find("Ok").unwrap(),
+            result_src.find("Ok").unwrap() + "Ok".len()
+        )
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn symbol_at_resolves_local_record_construct_type() {
+    let root = unique_temp_root();
+    write_project_file(&root, "bahn.toml", "[package]\nname = \"demo\"\n");
+    let main_src = "(type Point [(:x ~ Int) (:y ~ Int)])\n(let main {} (Point :x 10 :y 12))\n";
+    let main_path = root.join("src/main.mond");
+    write_project_file(&root, "src/main.mond", main_src);
+
+    let project = test_project(
+        BTreeMap::new(),
+        BTreeMap::from([(
+            "main".to_string(),
+            ModuleSource {
+                name: "main".to_string(),
+                path: main_path.clone(),
+                source: main_src.to_string(),
+            },
+        )]),
+        BTreeMap::new(),
+        None,
+    );
+    let doc = project.document_for_path(&main_path).expect("main doc");
+    let analysis = project
+        .analyze_document_with_options(&doc, false, false)
+        .expect("document analysis");
+    let offset = main_src.rfind("(Point").unwrap() + 1;
+    let symbol = symbol_at(&doc.path, &doc.source, &doc.name, &analysis.imports, offset)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        symbol,
+        Symbol {
+            module: "main".to_string(),
+            function: "Point".to_string(),
+        }
+    );
+
+    let location = project
+        .definition_location(&symbol.module, &symbol.function)
+        .expect("definition location")
+        .expect("type definition");
+    assert_eq!(
+        location.range,
+        byte_range_to_lsp_range(
+            main_src,
+            main_src.find("Point").unwrap(),
+            main_src.find("Point").unwrap() + "Point".len()
+        )
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn symbol_at_resolves_top_level_call_site_with_underscores() {
+    let src = r#"(use std/io)
+(use std/fs)
+(use std/result [Result])
+(use std/process)
+
+(type Point
+  [(:x ~ Int)
+   (:y ~ Int)])
+
+(let update_x {point new_x}
+  (with point
+    :x new_x))
+
+(let main {}
+  (let [_ (process/spawn (f {} -> (io/println "h")))])
+  (let [files (fs/read_directory ".")]
+    (match files
+      (Ok files) ~> (io/debug files)
+      (Error err) ~> (io/debug err)))
+  (let [my_point (Point :x 10 :y 12)]
+    (io/debug my_point)
+    (let [updated_point (update_x my_point 50)]
+      (io/debug updated_point)))
+  (process/sleep 150))"#;
+    let imports = mondc::ResolvedImports::default();
+    let offset = src.rfind("update_x").unwrap();
+    let symbol = symbol_at(Path::new("src/main.mond"), src, "main", &imports, offset)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        symbol,
+        Symbol {
+            module: "main".to_string(),
+            function: "update_x".to_string(),
+        }
+    );
+    assert_eq!(
+        local_symbol_at(Path::new("src/main.mond"), src, offset).unwrap(),
+        None
+    );
+    let locals = local_names_at_offset(Path::new("src/main.mond"), src, offset).unwrap();
+    assert!(!locals.iter().any(|name| name == "_"));
 }
 
 #[test]

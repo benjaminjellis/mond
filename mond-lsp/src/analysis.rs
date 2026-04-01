@@ -91,6 +91,14 @@ pub(crate) enum CompletionContext {
 
 type ProjectDiagnostic = Vec<(ModuleSource, Vec<Diagnostic>)>;
 
+struct OccurrenceContext<'a> {
+    current_module: &'a str,
+    top_level: &'a HashSet<String>,
+    type_origins: &'a HashMap<String, String>,
+    constructor_origins: &'a HashMap<String, String>,
+    imports: &'a mondc::ResolvedImports,
+}
+
 pub(crate) fn project_diagnostic_batches_for_uri(
     root: Option<&Path>,
     state: &Arc<Mutex<ServerState>>,
@@ -299,11 +307,58 @@ pub(super) fn find_top_level_definition_range(
                     name_span.end,
                 )));
             }
+            mondc::ast::Declaration::Type(mondc::ast::TypeDecl::Record {
+                name: type_name,
+                span,
+                ..
+            }) if type_name == name => {
+                if let Some(range) = find_ident_range_in_span(source, &span, name) {
+                    return Ok(Some(range));
+                }
+            }
+            mondc::ast::Declaration::Type(mondc::ast::TypeDecl::Variant {
+                name: type_name,
+                span,
+                ..
+            }) if type_name == name => {
+                if let Some(range) = find_ident_range_in_span(source, &span, name) {
+                    return Ok(Some(range));
+                }
+            }
+            mondc::ast::Declaration::Type(mondc::ast::TypeDecl::Variant {
+                constructors,
+                span,
+                ..
+            }) if constructors
+                .iter()
+                .any(|(constructor_name, _)| constructor_name == name) =>
+            {
+                if let Some(range) = find_ident_range_in_span(source, &span, name) {
+                    return Ok(Some(range));
+                }
+            }
             _ => {}
         }
     }
 
     Ok(None)
+}
+
+fn find_ident_range_in_span(
+    source: &str,
+    span: &std::ops::Range<usize>,
+    name: &str,
+) -> Option<Range> {
+    mondc::lexer::Lexer::new(source)
+        .lex()
+        .into_iter()
+        .find(|token| {
+            token.span.start >= span.start
+                && token.span.end <= span.end
+                && matches!(token.kind, mondc::lexer::TokenKind::Ident)
+                && source[token.span.clone()] == *name
+        })
+        .map(|token| byte_range_to_lsp_range(source, token.span.start, token.span.end))
 }
 
 pub(super) fn find_project_root(path: &Path) -> Option<PathBuf> {
@@ -806,15 +861,19 @@ pub(super) fn local_names_in_expr(
             name, args, value, ..
         } => {
             let mut inner = locals.clone();
-            inner.insert(name.clone());
-            inner.extend(args.iter().cloned());
+            if name != "_" {
+                inner.insert(name.clone());
+            }
+            inner.extend(args.iter().filter(|arg| arg.as_str() != "_").cloned());
             local_names_in_expr(value, offset, &inner).or_else(|| Some(inner))
         }
         Expr::LetLocal {
             name, value, body, ..
         } => local_names_in_expr(value, offset, locals).or_else(|| {
             let mut inner = locals.clone();
-            inner.insert(name.clone());
+            if name != "_" {
+                inner.insert(name.clone());
+            }
             local_names_in_expr(body, offset, &inner).or(Some(inner))
         }),
         Expr::If {
@@ -864,7 +923,7 @@ pub(super) fn local_names_in_expr(
             .or_else(|| Some(locals.clone())),
         Expr::Lambda { args, body, .. } => {
             let mut inner = locals.clone();
-            inner.extend(args.iter().cloned());
+            inner.extend(args.iter().filter(|arg| arg.as_str() != "_").cloned());
             local_names_in_expr(body, offset, &inner).or(Some(inner))
         }
         Expr::QualifiedCall { args, .. } => args
@@ -1193,9 +1252,19 @@ pub(super) fn collect_symbol_occurrences(
 ) -> std::result::Result<Vec<SymbolOccurrence>, String> {
     let (sexprs, decls) = parse_module(source_path, source)?;
     let top_level = top_level_bindings(&decls);
+    let type_origins = type_origins(current_module, &decls, &imports.imported_type_decls);
+    let constructor_origins =
+        constructor_origins(current_module, &decls, &imports.imported_type_decls);
+    let context = OccurrenceContext {
+        current_module,
+        top_level: &top_level,
+        type_origins: &type_origins,
+        constructor_origins: &constructor_origins,
+        imports,
+    };
     let mut out = collect_use_import_occurrences(source, &sexprs)?;
     for decl in &decls {
-        collect_decl_occurrences(decl, current_module, &top_level, imports, &mut out);
+        collect_decl_occurrences(decl, &context, &mut out);
     }
     Ok(out)
 }
@@ -1420,6 +1489,144 @@ pub(super) fn top_level_bindings(decls: &[mondc::ast::Declaration]) -> HashSet<S
         .collect()
 }
 
+pub(super) fn constructor_name_range(
+    span: &std::ops::Range<usize>,
+    constructor_name: &str,
+) -> std::ops::Range<usize> {
+    let function_name = constructor_name
+        .rsplit_once('/')
+        .map(|(_, function_name)| function_name)
+        .unwrap_or(constructor_name);
+    let token_len = constructor_name.len();
+    let span_len = span.end.saturating_sub(span.start);
+    let (token_start, token_end) = if span_len == token_len {
+        (span.start, span.end)
+    } else {
+        let token_start = span.start + 1;
+        (token_start, token_start + token_len)
+    };
+    if constructor_name.contains('/') {
+        token_end.saturating_sub(function_name.len())..token_end
+    } else {
+        token_start..token_end
+    }
+}
+
+pub(super) fn constructor_origins(
+    current_module: &str,
+    decls: &[mondc::ast::Declaration],
+    imported_type_decls: &[mondc::ast::TypeDecl],
+) -> HashMap<String, String> {
+    let mut origins = HashMap::new();
+
+    for decl in decls {
+        if let mondc::ast::Declaration::Type(mondc::ast::TypeDecl::Variant {
+            constructors, ..
+        }) = decl
+        {
+            for (constructor_name, _) in constructors {
+                origins
+                    .entry(constructor_name.clone())
+                    .or_insert_with(|| current_module.to_string());
+            }
+        }
+    }
+
+    let mut qualified_variant_modules = HashMap::new();
+    for type_decl in imported_type_decls {
+        let mondc::ast::TypeDecl::Variant {
+            name, constructors, ..
+        } = type_decl
+        else {
+            continue;
+        };
+        let Some((module_name, type_name)) = name.rsplit_once('/') else {
+            continue;
+        };
+        let constructor_names = constructors
+            .iter()
+            .map(|(constructor_name, _)| constructor_name.clone())
+            .collect::<Vec<_>>();
+        qualified_variant_modules.insert(
+            (type_name.to_string(), constructor_names),
+            module_name.to_string(),
+        );
+    }
+
+    for type_decl in imported_type_decls {
+        let mondc::ast::TypeDecl::Variant {
+            name, constructors, ..
+        } = type_decl
+        else {
+            continue;
+        };
+        if name.contains('/') {
+            continue;
+        }
+        let constructor_names = constructors
+            .iter()
+            .map(|(constructor_name, _)| constructor_name.clone())
+            .collect::<Vec<_>>();
+        let Some(module_name) = qualified_variant_modules.get(&(name.clone(), constructor_names))
+        else {
+            continue;
+        };
+        for (constructor_name, _) in constructors {
+            origins
+                .entry(constructor_name.clone())
+                .or_insert_with(|| module_name.clone());
+        }
+    }
+
+    origins
+}
+
+pub(super) fn type_origins(
+    current_module: &str,
+    decls: &[mondc::ast::Declaration],
+    imported_type_decls: &[mondc::ast::TypeDecl],
+) -> HashMap<String, String> {
+    let mut origins = HashMap::new();
+
+    for decl in decls {
+        if let mondc::ast::Declaration::Type(type_decl) = decl {
+            let type_name = match type_decl {
+                mondc::ast::TypeDecl::Record { name, .. }
+                | mondc::ast::TypeDecl::Variant { name, .. } => name,
+            };
+            origins
+                .entry(type_name.clone())
+                .or_insert_with(|| current_module.to_string());
+        }
+    }
+
+    let qualified_type_modules = imported_type_decls
+        .iter()
+        .filter_map(|type_decl| match type_decl {
+            mondc::ast::TypeDecl::Record { name, .. }
+            | mondc::ast::TypeDecl::Variant { name, .. } => name.rsplit_once('/'),
+        })
+        .map(|(module_name, type_name)| (type_name.to_string(), module_name.to_string()))
+        .collect::<HashMap<_, _>>();
+
+    for type_decl in imported_type_decls {
+        let type_name = match type_decl {
+            mondc::ast::TypeDecl::Record { name, .. }
+            | mondc::ast::TypeDecl::Variant { name, .. } => name,
+        };
+        if type_name.contains('/') {
+            continue;
+        }
+        if let Some(module_name) = qualified_type_modules.get(type_name) {
+            origins
+                .entry(type_name.clone())
+                .or_insert_with(|| module_name.clone());
+        }
+    }
+
+    origins
+}
+
 pub(super) fn collect_use_import_occurrences(
     source: &str,
     sexprs: &[mondc::sexpr::SExpr],
@@ -1492,53 +1699,35 @@ pub(super) fn collect_use_import_occurrences(
     Ok(out)
 }
 
-pub(super) fn collect_decl_occurrences(
+fn collect_decl_occurrences(
     decl: &mondc::ast::Declaration,
-    current_module: &str,
-    top_level: &HashSet<String>,
-    imports: &mondc::ResolvedImports,
+    context: &OccurrenceContext<'_>,
     out: &mut Vec<SymbolOccurrence>,
 ) {
     match decl {
         mondc::ast::Declaration::Expression(expr) => {
-            collect_expr_occurrences(
-                expr,
-                current_module,
-                top_level,
-                imports,
-                &HashSet::new(),
-                out,
-            );
+            collect_expr_occurrences(expr, context, &HashSet::new(), out);
         }
         mondc::ast::Declaration::ExternLet {
             name, name_span, ..
         } => out.push(SymbolOccurrence {
             symbol: Symbol {
-                module: current_module.to_string(),
+                module: context.current_module.to_string(),
                 function: name.clone(),
             },
             range: name_span.clone(),
             kind: OccurrenceKind::Definition,
         }),
         mondc::ast::Declaration::Test { body, .. } => {
-            collect_expr_occurrences(
-                body,
-                current_module,
-                top_level,
-                imports,
-                &HashSet::new(),
-                out,
-            );
+            collect_expr_occurrences(body, context, &HashSet::new(), out);
         }
         _ => {}
     }
 }
 
-pub(super) fn collect_expr_occurrences(
+fn collect_expr_occurrences(
     expr: &mondc::ast::Expr,
-    current_module: &str,
-    top_level: &HashSet<String>,
-    imports: &mondc::ResolvedImports,
+    context: &OccurrenceContext<'_>,
     locals: &HashSet<String>,
     out: &mut Vec<SymbolOccurrence>,
 ) {
@@ -1550,16 +1739,26 @@ pub(super) fn collect_expr_occurrences(
             if locals.contains(name) {
                 return;
             }
-            let symbol = if top_level.contains(name) {
+            let symbol = if context.top_level.contains(name) {
                 Some(Symbol {
-                    module: current_module.to_string(),
+                    module: context.current_module.to_string(),
                     function: name.clone(),
                 })
             } else {
-                imports.import_origins.get(name).map(|module| Symbol {
-                    module: module.clone(),
-                    function: name.clone(),
-                })
+                context
+                    .imports
+                    .import_origins
+                    .get(name)
+                    .map(|module| Symbol {
+                        module: module.clone(),
+                        function: name.clone(),
+                    })
+                    .or_else(|| {
+                        context.constructor_origins.get(name).map(|module| Symbol {
+                            module: module.clone(),
+                            function: name.clone(),
+                        })
+                    })
             };
             if let Some(symbol) = symbol {
                 out.push(SymbolOccurrence {
@@ -1571,7 +1770,7 @@ pub(super) fn collect_expr_occurrences(
         }
         Expr::List(items, _) => {
             for item in items {
-                collect_expr_occurrences(item, current_module, top_level, imports, locals, out);
+                collect_expr_occurrences(item, context, locals, out);
             }
         }
         Expr::LetFunc {
@@ -1583,7 +1782,7 @@ pub(super) fn collect_expr_occurrences(
         } => {
             out.push(SymbolOccurrence {
                 symbol: Symbol {
-                    module: current_module.to_string(),
+                    module: context.current_module.to_string(),
                     function: name.clone(),
                 },
                 range: name_span.clone(),
@@ -1592,78 +1791,77 @@ pub(super) fn collect_expr_occurrences(
             let mut inner = locals.clone();
             inner.insert(name.clone());
             inner.extend(args.iter().cloned());
-            collect_expr_occurrences(value, current_module, top_level, imports, &inner, out);
+            collect_expr_occurrences(value, context, &inner, out);
         }
         Expr::LetLocal {
             name, value, body, ..
         } => {
-            collect_expr_occurrences(value, current_module, top_level, imports, locals, out);
+            collect_expr_occurrences(value, context, locals, out);
             let mut inner = locals.clone();
             inner.insert(name.clone());
-            collect_expr_occurrences(body, current_module, top_level, imports, &inner, out);
+            collect_expr_occurrences(body, context, &inner, out);
         }
         Expr::If {
             cond, then, els, ..
         } => {
-            collect_expr_occurrences(cond, current_module, top_level, imports, locals, out);
-            collect_expr_occurrences(then, current_module, top_level, imports, locals, out);
-            collect_expr_occurrences(els, current_module, top_level, imports, locals, out);
+            collect_expr_occurrences(cond, context, locals, out);
+            collect_expr_occurrences(then, context, locals, out);
+            collect_expr_occurrences(els, context, locals, out);
         }
         Expr::Call { func, args, .. } => {
-            collect_expr_occurrences(func, current_module, top_level, imports, locals, out);
+            collect_expr_occurrences(func, context, locals, out);
             for arg in args {
-                collect_expr_occurrences(arg, current_module, top_level, imports, locals, out);
+                collect_expr_occurrences(arg, context, locals, out);
             }
         }
         Expr::Match { targets, arms, .. } => {
             for target in targets {
-                collect_expr_occurrences(target, current_module, top_level, imports, locals, out);
+                collect_expr_occurrences(target, context, locals, out);
             }
             for arm in arms {
+                for pattern in &arm.patterns {
+                    collect_pattern_occurrences(pattern, context.constructor_origins, out);
+                }
                 let mut inner = locals.clone();
                 for pat in &arm.patterns {
                     bind_pattern_names(pat, &mut inner);
                 }
                 if let Some(guard) = &arm.guard {
-                    collect_expr_occurrences(
-                        guard,
-                        current_module,
-                        top_level,
-                        imports,
-                        &inner,
-                        out,
-                    );
+                    collect_expr_occurrences(guard, context, &inner, out);
                 }
-                collect_expr_occurrences(
-                    &arm.body,
-                    current_module,
-                    top_level,
-                    imports,
-                    &inner,
-                    out,
-                );
+                collect_expr_occurrences(&arm.body, context, &inner, out);
             }
         }
         Expr::FieldAccess { record, .. } => {
-            collect_expr_occurrences(record, current_module, top_level, imports, locals, out);
+            collect_expr_occurrences(record, context, locals, out);
         }
-        Expr::RecordConstruct { fields, .. } => {
+        Expr::RecordConstruct { name, fields, span } => {
+            if let Some(module) = context.type_origins.get(name) {
+                out.push(SymbolOccurrence {
+                    symbol: Symbol {
+                        module: module.clone(),
+                        function: name.clone(),
+                    },
+                    range: constructor_name_range(span, name),
+                    kind: OccurrenceKind::Reference,
+                });
+            }
             for (_, value) in fields {
-                collect_expr_occurrences(value, current_module, top_level, imports, locals, out);
+                collect_expr_occurrences(value, context, locals, out);
             }
         }
         Expr::RecordUpdate {
             record, updates, ..
         } => {
-            collect_expr_occurrences(record, current_module, top_level, imports, locals, out);
+            collect_expr_occurrences(record, context, locals, out);
             for (_, value) in updates {
-                collect_expr_occurrences(value, current_module, top_level, imports, locals, out);
+                collect_expr_occurrences(value, context, locals, out);
             }
         }
         Expr::Lambda { args, body, .. } => {
             let mut inner = locals.clone();
             inner.extend(args.iter().cloned());
-            collect_expr_occurrences(body, current_module, top_level, imports, &inner, out);
+            collect_expr_occurrences(body, context, &inner, out);
         }
         Expr::QualifiedCall {
             module,
@@ -1681,9 +1879,59 @@ pub(super) fn collect_expr_occurrences(
                 kind: OccurrenceKind::Reference,
             });
             for arg in args {
-                collect_expr_occurrences(arg, current_module, top_level, imports, locals, out);
+                collect_expr_occurrences(arg, context, locals, out);
             }
         }
+    }
+}
+
+pub(super) fn collect_pattern_occurrences(
+    pat: &mondc::ast::Pattern,
+    constructor_origins: &HashMap<String, String>,
+    out: &mut Vec<SymbolOccurrence>,
+) {
+    match pat {
+        mondc::ast::Pattern::Constructor(name, args, span) => {
+            let symbol = if let Some((module_name, constructor_name)) = name.rsplit_once('/') {
+                Some(Symbol {
+                    module: module_name.to_string(),
+                    function: constructor_name.to_string(),
+                })
+            } else {
+                constructor_origins.get(name).map(|module_name| Symbol {
+                    module: module_name.clone(),
+                    function: name.clone(),
+                })
+            };
+            if let Some(symbol) = symbol {
+                out.push(SymbolOccurrence {
+                    symbol,
+                    range: constructor_name_range(span, name),
+                    kind: OccurrenceKind::Reference,
+                });
+            }
+            for arg in args {
+                collect_pattern_occurrences(arg, constructor_origins, out);
+            }
+        }
+        mondc::ast::Pattern::Or(patterns, _) => {
+            for pattern in patterns {
+                collect_pattern_occurrences(pattern, constructor_origins, out);
+            }
+        }
+        mondc::ast::Pattern::Cons(head, tail, _) => {
+            collect_pattern_occurrences(head, constructor_origins, out);
+            collect_pattern_occurrences(tail, constructor_origins, out);
+        }
+        mondc::ast::Pattern::Record { fields, .. } => {
+            for (_, pattern, _) in fields {
+                collect_pattern_occurrences(pattern, constructor_origins, out);
+            }
+        }
+        mondc::ast::Pattern::Any(_)
+        | mondc::ast::Pattern::Variable(_, _)
+        | mondc::ast::Pattern::Literal(_, _)
+        | mondc::ast::Pattern::EmptyList(_) => {}
     }
 }
 
@@ -1905,6 +2153,9 @@ pub(super) fn collect_local_occurrences_in_expr(
         } => {
             let mut inner = locals.clone();
             for (arg, span) in args.iter().zip(arg_spans.iter()) {
+                if arg == "_" {
+                    continue;
+                }
                 let symbol = LocalSymbol {
                     name: arg.clone(),
                     def_range: span.clone(),
@@ -1927,16 +2178,18 @@ pub(super) fn collect_local_occurrences_in_expr(
         } => {
             collect_local_occurrences_in_expr(value, locals, out);
             let mut inner = locals.clone();
-            let symbol = LocalSymbol {
-                name: name.clone(),
-                def_range: name_span.clone(),
-            };
-            out.push(LocalOccurrence {
-                symbol: symbol.clone(),
-                range: name_span.clone(),
-                kind: OccurrenceKind::Definition,
-            });
-            inner.insert(name.clone(), symbol);
+            if name != "_" {
+                let symbol = LocalSymbol {
+                    name: name.clone(),
+                    def_range: name_span.clone(),
+                };
+                out.push(LocalOccurrence {
+                    symbol: symbol.clone(),
+                    range: name_span.clone(),
+                    kind: OccurrenceKind::Definition,
+                });
+                inner.insert(name.clone(), symbol);
+            }
             collect_local_occurrences_in_expr(body, &inner, out);
         }
         Expr::If {
@@ -1991,6 +2244,9 @@ pub(super) fn collect_local_occurrences_in_expr(
         } => {
             let mut inner = locals.clone();
             for (arg, span) in args.iter().zip(arg_spans.iter()) {
+                if arg == "_" {
+                    continue;
+                }
                 let symbol = LocalSymbol {
                     name: arg.clone(),
                     def_range: span.clone(),
@@ -2019,6 +2275,9 @@ pub(super) fn bind_pattern_locals(
 ) {
     match pat {
         mondc::ast::Pattern::Variable(name, span) => {
+            if name == "_" {
+                return;
+            }
             let symbol = LocalSymbol {
                 name: name.clone(),
                 def_range: span.clone(),
@@ -2053,7 +2312,9 @@ pub(super) fn bind_pattern_locals(
 pub(super) fn bind_pattern_names(pat: &mondc::ast::Pattern, out: &mut HashSet<String>) {
     match pat {
         mondc::ast::Pattern::Variable(name, _) => {
-            out.insert(name.clone());
+            if name != "_" {
+                out.insert(name.clone());
+            }
         }
         mondc::ast::Pattern::Constructor(_, args, _) => {
             for arg in args {

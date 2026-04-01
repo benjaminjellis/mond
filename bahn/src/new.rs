@@ -3,7 +3,7 @@ use std::path::Path;
 
 use eyre::Context;
 
-use crate::{MANIFEST_NAME, manifest};
+use crate::{MANIFEST_NAME, gitignore, manifest};
 
 pub(crate) fn create_new_project(name: &String, root: &Path, lib: bool) -> eyre::Result<()> {
     let project_dir = root.join(name);
@@ -24,6 +24,7 @@ pub(crate) fn create_new_project(name: &String, root: &Path, lib: bool) -> eyre:
     let tests_dir = project_dir.join("tests");
     std::fs::create_dir_all(&tests_dir)
         .context(format!("could not create tests dir {tests_dir:?}"))?;
+    gitignore::write_gitignore(project_dir.clone())?;
 
     if lib {
         let lib_root = src_dir.join(LIB_ROOT);
@@ -67,6 +68,7 @@ mod tests {
         let project_dir = root.join(project_name);
         assert!(project_dir.join("tests").is_dir());
         assert!(project_dir.join("src").join(LIB_ROOT).is_file());
+        assert!(project_dir.join(".gitignore").is_file());
 
         std::fs::remove_dir_all(&root).expect("cleanup temp root");
     }
@@ -82,6 +84,7 @@ mod tests {
         let project_dir = root.join(project_name);
         assert!(project_dir.join("tests").is_dir());
         assert!(project_dir.join("src").join(BIN_ENTRY_POINT).is_file());
+        assert!(project_dir.join(".gitignore").is_file());
 
         std::fs::remove_dir_all(&root).expect("cleanup temp root");
     }

@@ -98,6 +98,8 @@ pub enum TokenKind {
     Do,
     #[token("with")]
     With,
+    #[token("debug")]
+    Debug,
     #[regex(":[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice()[1..].to_string())]
     NamedField(String),
 
@@ -170,6 +172,7 @@ impl TokenKind {
             TokenKind::Test => "keyword 'test'",
             TokenKind::Do => "keyword 'do'",
             TokenKind::With => "keyword 'with'",
+            TokenKind::Debug => "keyword 'debug'",
             TokenKind::NamedField(_) => "field name (e.g. :name)",
             TokenKind::Float(_) => "float literal",
             TokenKind::Int(_) => "integer literal",

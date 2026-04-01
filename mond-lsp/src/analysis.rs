@@ -882,6 +882,7 @@ pub(super) fn local_names_in_expr(
             .or_else(|| local_names_in_expr(then, offset, locals))
             .or_else(|| local_names_in_expr(els, offset, locals))
             .or_else(|| Some(locals.clone())),
+        Expr::Debug { value, .. } => local_names_in_expr(value, offset, locals),
         Expr::Call { func, args, .. } => local_names_in_expr(func, offset, locals)
             .or_else(|| {
                 args.iter()
@@ -1092,6 +1093,9 @@ pub(super) fn signature_target_in_expr(
             .or_else(|| {
                 signature_target_in_expr(els, current_module, top_level, imports, offset, locals)
             }),
+        Expr::Debug { value, .. } => {
+            signature_target_in_expr(value, current_module, top_level, imports, offset, locals)
+        }
         Expr::Call { func, args, .. } => {
             for arg in args {
                 if let Some(target) = signature_target_in_expr(
@@ -1768,6 +1772,9 @@ fn collect_expr_occurrences(
                 });
             }
         }
+        Expr::Debug { value, .. } => {
+            collect_expr_occurrences(value, context, locals, out);
+        }
         Expr::List(items, _) => {
             for item in items {
                 collect_expr_occurrences(item, context, locals, out);
@@ -2025,6 +2032,7 @@ pub(super) fn hover_target_in_expr(
         } => hover_target_in_expr(cond, offset, locals)
             .or_else(|| hover_target_in_expr(then, offset, locals))
             .or_else(|| hover_target_in_expr(els, offset, locals)),
+        Expr::Debug { value, .. } => hover_target_in_expr(value, offset, locals),
         Expr::Call { func, args, .. } => hover_target_in_expr(func, offset, locals).or_else(|| {
             args.iter()
                 .find_map(|arg| hover_target_in_expr(arg, offset, locals))
@@ -2139,6 +2147,9 @@ pub(super) fn collect_local_occurrences_in_expr(
                     kind: OccurrenceKind::Reference,
                 });
             }
+        }
+        Expr::Debug { value, .. } => {
+            collect_local_occurrences_in_expr(value, locals, out);
         }
         Expr::List(items, _) => {
             for item in items {

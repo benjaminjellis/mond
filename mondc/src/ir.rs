@@ -4,6 +4,7 @@
 pub struct Module {
     pub name: String,
     pub functions: Vec<Function>,
+    pub support_sources: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -893,6 +893,7 @@ pub(super) fn is_non_expansive(expr: &Expr) -> bool {
             fields.iter().all(|(_, value)| is_non_expansive(value))
         }
         Expr::Call { .. }
+        | Expr::Debug { .. }
         | Expr::QualifiedCall { .. }
         | Expr::If { .. }
         | Expr::Match { .. }

@@ -684,6 +684,13 @@ impl TypeChecker {
                 Ok((s_res.clone(), ty, apply_subst_preds(&s_res, &preds)))
             }
 
+            Expr::Debug { value, .. } => {
+                let (subst, _value_ty, preds) = self.infer(env, value)?;
+                let ty = Type::unit();
+                self.record_expr_type(expr.span(), ty.clone());
+                Ok((subst.clone(), ty, apply_subst_preds(&subst, &preds)))
+            }
+
             Expr::Call {
                 func, args, span, ..
             } => {

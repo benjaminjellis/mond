@@ -1,19 +1,17 @@
 use std::collections::HashMap;
 
 use crate::{
-    compile_with_imports, compile_with_imports_in_session, compile_with_imports_report,
-    compile_with_imports_report_with_private_records, exported_type_decls, infer_module_exports,
-    infer_module_expr_types, lower, pub_reexports, session, typecheck, warnings,
+    CompileTarget, CompileWithImportsInput, compile_with_imports as compile_with_imports_api,
+    compile_with_imports_in_session as compile_with_imports_in_session_api,
+    compile_with_imports_report as compile_with_imports_report_api,
+    compile_with_imports_report_with_private_records as compile_with_imports_report_with_private_records_api,
+    exported_type_decls, infer_module_exports, infer_module_expr_types, lower, pub_reexports,
+    session, typecheck, warnings,
 };
 
 const RESULT_STD_SRC: &str = r#"
 (pub type ['a 'e] Result [(Ok ~ 'a) (Error ~ 'e)])
 (pub let bind {m func} (match m (Ok x) ~> (func x) (Error e) ~> (Error e)))
-"#;
-
-const IO_STD_SRC: &str = r#"
-(pub extern let println ~ (String -> Unit) io/format)
-(pub extern let debug ~ ('a -> Unit) io/format)
 "#;
 
 const TESTING_STD_SRC: &str = r#"
@@ -32,61 +30,60 @@ fn qualified_std_call_requires_use() {
     );
 
     let without_use = "(let main {} (io/println \"hello\"))";
-    let without_use_result = compile_with_imports(
-        "main",
-        without_use,
-        "main.mond",
-        HashMap::new(),
-        &module_exports,
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let without_use_result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: without_use,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &module_exports,
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(without_use_result.is_none());
 
     let with_use = "(use std/io)\n(let main {} (io/println \"hello\"))";
-    let with_use_result = compile_with_imports(
-        "main",
-        with_use,
-        "main.mond",
-        HashMap::new(),
-        &module_exports,
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let with_use_result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: with_use,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &module_exports,
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(with_use_result.is_some());
 }
 
 #[test]
-fn qualified_function_value_works_in_pipe_steps() {
-    let mut module_exports = HashMap::new();
-    module_exports.insert(
-        "io".to_string(),
-        vec!["println".to_string(), "debug".to_string()],
-    );
-
-    let src = "(use std/io)\n(let main {} (|> \"hello\" io/debug))";
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &module_exports,
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
-    assert!(
-        result.is_some(),
-        "qualified function value in pipe should compile"
-    );
+fn built_in_debug_compiles_without_std_import() {
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: "(let main {} (debug \"hello\"))",
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
+    assert!(result.is_some(), "built-in debug should compile");
 }
 
 #[test]
@@ -120,18 +117,21 @@ fn imported_record_update_normalizes_qualified_constructor_types() {
         },
     );
 
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &imported_type_decls,
-        &[],
-        &HashMap::new(),
-        &imported_schemes,
-    );
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &imported_type_decls,
+        debug_type_decls: &imported_type_decls,
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         result.is_some(),
         "record update should accept equivalent qualified and unqualified constructor types"
@@ -141,18 +141,21 @@ fn imported_record_update_normalizes_qualified_constructor_types() {
 #[test]
 fn error_identifier_is_allowed_in_bindings() {
     let src = "(let main {error} (match error _ ~> error))";
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         result.is_some(),
         "`error` should lex and lower as a normal identifier"
@@ -166,54 +169,63 @@ fn duplicate_unqualified_imports_error() {
     module_exports.insert("b".to_string(), vec!["map".to_string()]);
 
     let src = "(use a [map])\n(use b [map])\n(let main {} map)";
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &module_exports,
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &module_exports,
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(result.is_none());
 }
 
 #[test]
 fn duplicate_top_level_function_defs_error() {
     let src = "(let hello {} 1)\n(let hello {} 2)";
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(result.is_none());
 }
 
 #[test]
 fn top_level_forward_reference_compiles() {
     let src = "(let main {} (helper 10))\n(let helper {x} (+ x 1))";
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(result.is_some(), "forward reference should type-check");
 }
 
@@ -224,36 +236,42 @@ fn top_level_mutual_recursion_compiles() {
         (let odd  {n} (if (= n 0) False (even (- n 1))))
         (let main {} (even 4))
     "#;
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(result.is_some(), "mutual recursion should type-check");
 }
 
 #[test]
 fn duplicate_record_fields_error() {
     let src = "(type LotsOfFields [(:record ~ String) (:record ~ String)])";
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(result.is_none());
 }
 
@@ -264,18 +282,21 @@ fn record_constructor_type_mismatch_points_to_field_value() {
         (let new {}
           (Builder :initialised "oops"))
     "#;
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(report.has_errors(), "expected type error");
     let mismatch = report
         .diagnostics
@@ -298,18 +319,21 @@ fn record_constructor_type_mismatch_points_to_field_value() {
 #[test]
 fn duplicate_variant_constructors_error() {
     let src = "(type LotsOVariants [One One Two (Three ~ Int)])";
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(result.is_none());
 }
 
@@ -319,18 +343,21 @@ fn duplicate_variant_constructors_across_types_error() {
         (type DiffVariant [One Five (Six ~ String)])
         (type LotsOVariants [One Two (Three ~ Int) Four Five (Six ~ String)])
     "#;
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(result.is_none());
 }
 
@@ -340,18 +367,21 @@ fn top_level_function_conflicts_with_unqualified_import() {
     module_exports.insert("greetings".to_string(), vec!["hello".to_string()]);
 
     let src = "(use greetings [hello])\n(let hello {} 1)";
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &module_exports,
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &module_exports,
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(result.is_none());
 }
 
@@ -361,18 +391,21 @@ fn top_level_function_does_not_conflict_with_qualified_only_import() {
     module_exports.insert("greetings".to_string(), vec!["hello".to_string()]);
 
     let src = "(use greetings)\n(let hello {} 1)";
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &module_exports,
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &module_exports,
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(result.is_some());
 }
 
@@ -382,18 +415,21 @@ fn duplicate_module_use_without_unqualified_imports_is_allowed() {
     module_exports.insert("io".to_string(), vec!["println".to_string()]);
 
     let src = "(use std/io)\n(use std/io)\n(let main {} (io/println \"Hey!\"))";
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &module_exports,
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &module_exports,
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(result.is_some());
 }
 
@@ -409,18 +445,21 @@ fn qualified_only_use_does_not_import_variant_constructors_unqualified() {
     let analysis = crate::build_project_analysis(&std_mods, &[]).expect("analysis");
     let src = "(use result)\n(let main {} (Ok 1))";
     let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        resolved.imports,
-        &analysis.module_exports,
-        resolved.module_aliases,
-        &resolved.imported_type_decls,
-        &resolved.imported_extern_types,
-        &resolved.imported_field_indices,
-        &resolved.imported_schemes,
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: resolved.imports,
+        module_exports: &analysis.module_exports,
+        module_aliases: resolved.module_aliases,
+        imported_type_decls: &resolved.imported_type_decls,
+        debug_type_decls: &resolved.imported_type_decls,
+        imported_extern_types: &resolved.imported_extern_types,
+        imported_field_indices: &resolved.imported_field_indices,
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &resolved.imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         report.has_errors(),
         "qualified-only use should not import constructors"
@@ -447,18 +486,21 @@ fn qualified_only_use_allows_qualified_constructor_value() {
     let analysis = crate::build_project_analysis(&std_mods, &[]).expect("analysis");
     let src = "(use option)\n(let main {} option/None)";
     let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        resolved.imports,
-        &analysis.module_exports,
-        resolved.module_aliases,
-        &resolved.imported_type_decls,
-        &resolved.imported_extern_types,
-        &resolved.imported_field_indices,
-        &resolved.imported_schemes,
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: resolved.imports,
+        module_exports: &analysis.module_exports,
+        module_aliases: resolved.module_aliases,
+        imported_type_decls: &resolved.imported_type_decls,
+        debug_type_decls: &resolved.imported_type_decls,
+        imported_extern_types: &resolved.imported_extern_types,
+        imported_field_indices: &resolved.imported_field_indices,
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &resolved.imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         !report.has_errors(),
         "qualified constructor value should compile: {:?}",
@@ -481,18 +523,21 @@ fn qualified_only_use_allows_qualified_constructor_call() {
     let analysis = crate::build_project_analysis(&std_mods, &[]).expect("analysis");
     let src = "(use option)\n(let main {} (option/Some 1))";
     let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        resolved.imports,
-        &analysis.module_exports,
-        resolved.module_aliases,
-        &resolved.imported_type_decls,
-        &resolved.imported_extern_types,
-        &resolved.imported_field_indices,
-        &resolved.imported_schemes,
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: resolved.imports,
+        module_exports: &analysis.module_exports,
+        module_aliases: resolved.module_aliases,
+        imported_type_decls: &resolved.imported_type_decls,
+        debug_type_decls: &resolved.imported_type_decls,
+        imported_extern_types: &resolved.imported_extern_types,
+        imported_field_indices: &resolved.imported_field_indices,
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &resolved.imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         !report.has_errors(),
         "qualified constructor call should compile: {:?}",
@@ -515,18 +560,21 @@ fn qualified_constructor_patterns_lower_and_typecheck() {
     let analysis = crate::build_project_analysis(&std_mods, &[]).expect("analysis");
     let src = "(use option)\n(let main {x} (match x option/None ~> 0 (option/Some y) ~> y))";
     let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        resolved.imports,
-        &analysis.module_exports,
-        resolved.module_aliases,
-        &resolved.imported_type_decls,
-        &resolved.imported_extern_types,
-        &resolved.imported_field_indices,
-        &resolved.imported_schemes,
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: resolved.imports,
+        module_exports: &analysis.module_exports,
+        module_aliases: resolved.module_aliases,
+        imported_type_decls: &resolved.imported_type_decls,
+        debug_type_decls: &resolved.imported_type_decls,
+        imported_extern_types: &resolved.imported_extern_types,
+        imported_field_indices: &resolved.imported_field_indices,
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &resolved.imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         !report.has_errors(),
         "qualified constructor patterns should compile: {:?}",
@@ -550,18 +598,21 @@ fn importing_type_name_brings_variant_constructors_into_scope() {
     let analysis = crate::build_project_analysis(&std_mods, &[]).expect("analysis");
     let src = "(use result [Result])\n(let main {} (Ok 1))";
     let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        resolved.imports,
-        &analysis.module_exports,
-        resolved.module_aliases,
-        &resolved.imported_type_decls,
-        &resolved.imported_extern_types,
-        &resolved.imported_field_indices,
-        &resolved.imported_schemes,
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: resolved.imports,
+        module_exports: &analysis.module_exports,
+        module_aliases: resolved.module_aliases,
+        imported_type_decls: &resolved.imported_type_decls,
+        debug_type_decls: &resolved.imported_type_decls,
+        imported_extern_types: &resolved.imported_extern_types,
+        imported_field_indices: &resolved.imported_field_indices,
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &resolved.imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         !report.has_errors(),
         "type import should make constructors available: {:?}",
@@ -584,18 +635,21 @@ fn qualified_only_use_keeps_record_field_accessors_available() {
     let analysis = crate::build_project_analysis(&std_mods, &[]).expect("analysis");
     let src = "(use map)\n(let main {} (:value (map/take)))";
     let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        resolved.imports,
-        &analysis.module_exports,
-        resolved.module_aliases,
-        &resolved.imported_type_decls,
-        &resolved.imported_extern_types,
-        &resolved.imported_field_indices,
-        &resolved.imported_schemes,
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: resolved.imports,
+        module_exports: &analysis.module_exports,
+        module_aliases: resolved.module_aliases,
+        imported_type_decls: &resolved.imported_type_decls,
+        debug_type_decls: &resolved.imported_type_decls,
+        imported_extern_types: &resolved.imported_extern_types,
+        imported_field_indices: &resolved.imported_field_indices,
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &resolved.imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         !report.has_errors(),
         "record field access should work without unqualified type import: {:?}",
@@ -618,18 +672,21 @@ fn qualified_only_use_keeps_record_updates_available() {
     let analysis = crate::build_project_analysis(&std_mods, &[]).expect("analysis");
     let src = "(use map)\n(let main {} (with (map/take) :value \"next\"))";
     let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        resolved.imports,
-        &analysis.module_exports,
-        resolved.module_aliases,
-        &resolved.imported_type_decls,
-        &resolved.imported_extern_types,
-        &resolved.imported_field_indices,
-        &resolved.imported_schemes,
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: resolved.imports,
+        module_exports: &analysis.module_exports,
+        module_aliases: resolved.module_aliases,
+        imported_type_decls: &resolved.imported_type_decls,
+        debug_type_decls: &resolved.imported_type_decls,
+        imported_extern_types: &resolved.imported_extern_types,
+        imported_field_indices: &resolved.imported_field_indices,
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &resolved.imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         !report.has_errors(),
         "record update should work without unqualified type import: {:?}",
@@ -649,19 +706,21 @@ fn field_access_on_private_imported_record_reports_inaccessible_private_record()
     let src = "(use fs [make_dir])\n(let main {} (:name (make_dir)))";
     let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
 
-    let report = compile_with_imports_report_with_private_records(
-        "main",
-        src,
-        "main.mond",
-        resolved.imports,
-        &analysis.module_exports,
-        resolved.module_aliases,
-        &resolved.imported_type_decls,
-        &resolved.imported_extern_types,
-        &resolved.imported_field_indices,
-        &resolved.imported_private_records,
-        &resolved.imported_schemes,
-    );
+    let report = compile_with_imports_report_with_private_records_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: resolved.imports,
+        module_exports: &analysis.module_exports,
+        module_aliases: resolved.module_aliases,
+        imported_type_decls: &resolved.imported_type_decls,
+        debug_type_decls: &resolved.imported_type_decls,
+        imported_extern_types: &resolved.imported_extern_types,
+        imported_field_indices: &resolved.imported_field_indices,
+        imported_private_records: &resolved.imported_private_records,
+        imported_schemes: &resolved.imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
 
     assert!(
         report.has_errors(),
@@ -688,18 +747,21 @@ fn field_access_uses_the_record_type_not_just_field_name() {
                  (:state continue))\n\
                (let main {}\n\
                  (continue_payload_state (ContinuePayload :state 1)))";
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         !report.has_errors(),
         "expected call-site type to disambiguate field access: {:?}",
@@ -716,18 +778,21 @@ fn field_access_codegen_uses_record_qualified_index_when_labels_overlap() {
     let src = "(type ContinuePayload [(:id ~ Int) (:state ~ Int)])\n\
                (type Initialised [(:state ~ Int)])\n\
                (let main {} (:state (ContinuePayload :id 0 :state 1)))";
-    let output = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    )
+    let output = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    })
     .expect("compile");
     assert!(
         output.contains("erlang:element(3"),
@@ -740,18 +805,21 @@ fn record_update_codegen_uses_record_qualified_index_when_labels_overlap() {
     let src = "(type ContinuePayload [(:id ~ Int) (:state ~ Int)])\n\
                (type Initialised [(:state ~ Int)])\n\
                (let main {} (with (ContinuePayload :id 0 :state 1) :state 2))";
-    let output = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    )
+    let output = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    })
     .expect("compile");
     assert!(
         output.contains("erlang:setelement(3"),
@@ -767,18 +835,21 @@ fn nested_constructor_pattern_keeps_payload_bindings() {
                  (match value\n\
                    (Continue (ContinuePayload current_state _)) ~> current_state\n\
                    Stop ~> 0))";
-    let output = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    )
+    let output = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    })
     .expect("compile");
     assert!(
         output.contains("{continue, {continuepayload"),
@@ -797,18 +868,21 @@ fn qualified_type_reference_in_type_declaration_is_supported() {
     let analysis = crate::build_project_analysis(&std_mods, &[]).expect("analysis");
     let src = "(use process)\n(type ['m] Actor [(:name ~ (process/Name 'm))])\n(let main {} ())";
     let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        resolved.imports,
-        &analysis.module_exports,
-        resolved.module_aliases,
-        &resolved.imported_type_decls,
-        &resolved.imported_extern_types,
-        &resolved.imported_field_indices,
-        &resolved.imported_schemes,
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: resolved.imports,
+        module_exports: &analysis.module_exports,
+        module_aliases: resolved.module_aliases,
+        imported_type_decls: &resolved.imported_type_decls,
+        debug_type_decls: &resolved.imported_type_decls,
+        imported_extern_types: &resolved.imported_extern_types,
+        imported_field_indices: &resolved.imported_field_indices,
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &resolved.imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         !report.has_errors(),
         "expected qualified type reference to resolve: {:?}",
@@ -831,18 +905,21 @@ fn qualified_only_use_still_requires_qualified_type_spelling() {
     let analysis = crate::build_project_analysis(&std_mods, &[]).expect("analysis");
     let src = "(use process)\n(type ['m] Actor [(:name ~ (Name 'm))])\n(let main {} ())";
     let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        resolved.imports,
-        &analysis.module_exports,
-        resolved.module_aliases,
-        &resolved.imported_type_decls,
-        &resolved.imported_extern_types,
-        &resolved.imported_field_indices,
-        &resolved.imported_schemes,
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: resolved.imports,
+        module_exports: &analysis.module_exports,
+        module_aliases: resolved.module_aliases,
+        imported_type_decls: &resolved.imported_type_decls,
+        debug_type_decls: &resolved.imported_type_decls,
+        imported_extern_types: &resolved.imported_extern_types,
+        imported_field_indices: &resolved.imported_field_indices,
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &resolved.imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         report.has_errors(),
         "expected unknown type without unqualified import"
@@ -871,18 +948,21 @@ fn extern_signature_accepts_qualified_type_reference() {
     let analysis = crate::build_project_analysis(&std_mods, &[]).expect("analysis");
     let src = "(use process)\n(pub extern let set_name ~ ((process/Name 'm) -> Unit) process/set_name)\n(let main {} ())";
     let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        resolved.imports,
-        &analysis.module_exports,
-        resolved.module_aliases,
-        &resolved.imported_type_decls,
-        &resolved.imported_extern_types,
-        &resolved.imported_field_indices,
-        &resolved.imported_schemes,
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: resolved.imports,
+        module_exports: &analysis.module_exports,
+        module_aliases: resolved.module_aliases,
+        imported_type_decls: &resolved.imported_type_decls,
+        debug_type_decls: &resolved.imported_type_decls,
+        imported_extern_types: &resolved.imported_extern_types,
+        imported_field_indices: &resolved.imported_field_indices,
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &resolved.imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         !report.has_errors(),
         "unexpected diagnostics for qualified extern signature: {:?}",
@@ -897,18 +977,21 @@ fn extern_signature_accepts_qualified_type_reference() {
 #[test]
 fn extern_signature_reports_unknown_type_without_type_import() {
     let src = "(pub extern let nth ~ (Int -> (List 'a) -> Option 'a) mond_list_helpers/nth)\n(let main {} ())";
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(report.has_errors());
     let messages: Vec<String> = report
         .diagnostics
@@ -929,18 +1012,21 @@ fn extern_signature_accepts_type_imported_unqualified() {
     let mut module_exports = HashMap::new();
     module_exports.insert("option".to_string(), vec![]);
     let imported_type_decls = exported_type_decls("(pub type ['a] Option [(Some ~ 'a) None])");
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &module_exports,
-        HashMap::new(),
-        &imported_type_decls,
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &module_exports,
+        module_aliases: HashMap::new(),
+        imported_type_decls: &imported_type_decls,
+        debug_type_decls: &imported_type_decls,
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         !report.has_errors(),
         "unexpected diagnostics: {:?}",
@@ -967,18 +1053,21 @@ fn type_declaration_accepts_imported_extern_type() {
         (pub type SubjectPayload [(:owner ~ Pid) (:tag ~ Unknown)])
     "#;
     let resolved = crate::resolve_imports_for_source(src, &analysis.module_exports, &analysis);
-    let report = compile_with_imports_report(
-        "process",
-        src,
-        "process.mond",
-        resolved.imports,
-        &analysis.module_exports,
-        resolved.module_aliases,
-        &resolved.imported_type_decls,
-        &resolved.imported_extern_types,
-        &resolved.imported_field_indices,
-        &resolved.imported_schemes,
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "process",
+        source: src,
+        source_path: "process.mond",
+        imports: resolved.imports,
+        module_exports: &analysis.module_exports,
+        module_aliases: resolved.module_aliases,
+        imported_type_decls: &resolved.imported_type_decls,
+        debug_type_decls: &resolved.imported_type_decls,
+        imported_extern_types: &resolved.imported_extern_types,
+        imported_field_indices: &resolved.imported_field_indices,
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &resolved.imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         !report.has_errors(),
         "unexpected diagnostics: {:?}",
@@ -993,18 +1082,21 @@ fn type_declaration_accepts_imported_extern_type() {
 #[test]
 fn type_declaration_reports_unknown_type_without_import() {
     let src = "(pub type Next [Continue (Stop ~ ExitReason)])";
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(report.has_errors());
     let messages: Vec<String> = report
         .diagnostics
@@ -1022,18 +1114,21 @@ fn type_declaration_reports_unknown_type_without_import() {
 #[test]
 fn type_declaration_reports_missing_type_arguments() {
     let src = "(type ['s 'm] ContinuePayload [(:state ~ 's) (:select ~ 'm)])\n(pub type ['s 'm] Next [(Continue ~ ContinuePayload)])";
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(report.has_errors());
     let messages: Vec<String> = report
         .diagnostics
@@ -1055,18 +1150,21 @@ fn type_declaration_accepts_nested_type_application() {
                (pub extern type ['p] Selector)\n\
                (type ['m] ContinuePayload [(:select ~ (Selector (Option 'm)))])\n\
                (let main {} ())";
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(
         !report.has_errors(),
         "expected nested type application to compile, got diagnostics: {:?}",
@@ -1081,18 +1179,21 @@ fn type_declaration_accepts_nested_type_application() {
 #[test]
 fn nullary_extern_call_lowers_to_zero_arity() {
     let src = "(extern let now ~ (Unit -> Int) erlang/system_time)\n(let main {} (now))";
-    let output = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    )
+    let output = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    })
     .expect("compile");
     assert!(
         output.contains("now()"),
@@ -1112,18 +1213,21 @@ fn wildcard_import_enables_unqualified_call() {
     imports.insert("inc".to_string(), "math".to_string());
 
     let src = "(use math [*])\n(let main {} (inc 1))";
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
         imports,
-        &module_exports,
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+        module_exports: &module_exports,
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(result.is_some());
 }
 
@@ -1135,18 +1239,21 @@ fn local_shadowing_beats_unqualified_import() {
     imports.insert("x".to_string(), "m".to_string());
 
     let src = "(use m [x])\n(let main {x} x)";
-    let result = compile_with_imports(
-        "main",
-        src,
-        "main.mond",
+    let result = compile_with_imports_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
         imports,
-        &module_exports,
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+        module_exports: &module_exports,
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
     assert!(result.is_some());
 }
 
@@ -1237,58 +1344,40 @@ fn infer_module_exports_preserves_result_bind_error_type() {
 #[test]
 fn letq_reports_continuation_mismatch_without_bind_in_scope() {
     let result_src = RESULT_STD_SRC;
-    let io_src = IO_STD_SRC;
-
     let mut module_exports = HashMap::new();
     module_exports.insert(
         "result".to_string(),
         vec!["Result".to_string(), "bind".to_string()],
     );
-    module_exports.insert(
-        "io".to_string(),
-        vec!["println".to_string(), "debug".to_string()],
-    );
 
-    let io_schemes = infer_module_exports(
-        "io",
-        io_src,
-        HashMap::new(),
-        &module_exports,
-        &[],
-        &[],
-        &HashMap::new(),
-    );
-
-    let mut imported_schemes = HashMap::new();
-    imported_schemes.insert("debug".to_string(), io_schemes["debug"].clone());
-    imported_schemes.insert("io/debug".to_string(), io_schemes["debug"].clone());
-
+    let imported_schemes = HashMap::new();
     let imported_type_decls = exported_type_decls(result_src);
     let mut imports = HashMap::new();
     imports.insert("Result".to_string(), "result".to_string());
-    imports.insert("debug".to_string(), "io".to_string());
 
     let src = r#"
             (use result [Result])
-            (use io [debug])
             (let ok {} (Ok ()))
             (let main {}
               (let? [val (ok)]
                 (debug val)))
         "#;
 
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
         imports,
-        &module_exports,
-        HashMap::new(),
-        &imported_type_decls,
-        &[],
-        &HashMap::new(),
-        &imported_schemes,
-    );
+        module_exports: &module_exports,
+        module_aliases: HashMap::new(),
+        imported_type_decls: &imported_type_decls,
+        debug_type_decls: &imported_type_decls,
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
 
     assert!(report.has_errors(), "expected type error");
     let rendered: Vec<String> = report
@@ -1307,17 +1396,12 @@ fn letq_reports_continuation_mismatch_without_bind_in_scope() {
 #[test]
 fn test_declaration_with_letq_reports_continuation_mismatch_without_bind_in_scope() {
     let result_src = RESULT_STD_SRC;
-    let io_src = IO_STD_SRC;
     let testing_src = TESTING_STD_SRC;
 
     let mut module_exports = HashMap::new();
     module_exports.insert(
         "result".to_string(),
         vec!["Result".to_string(), "bind".to_string()],
-    );
-    module_exports.insert(
-        "io".to_string(),
-        vec!["println".to_string(), "debug".to_string()],
     );
     module_exports.insert(
         "testing".to_string(),
@@ -1331,15 +1415,6 @@ fn test_declaration_with_letq_reports_continuation_mismatch_without_bind_in_scop
     let result_schemes = infer_module_exports(
         "result",
         result_src,
-        HashMap::new(),
-        &module_exports,
-        &[],
-        &[],
-        &HashMap::new(),
-    );
-    let io_schemes = infer_module_exports(
-        "io",
-        io_src,
         HashMap::new(),
         &module_exports,
         &[],
@@ -1361,10 +1436,6 @@ fn test_declaration_with_letq_reports_continuation_mismatch_without_bind_in_scop
         imported_schemes.insert(name.clone(), scheme.clone());
         imported_schemes.insert(format!("result/{name}"), scheme.clone());
     }
-    for (name, scheme) in &io_schemes {
-        imported_schemes.insert(name.clone(), scheme.clone());
-        imported_schemes.insert(format!("io/{name}"), scheme.clone());
-    }
     for (name, scheme) in &testing_schemes {
         imported_schemes.insert(name.clone(), scheme.clone());
         imported_schemes.insert(format!("testing/{name}"), scheme.clone());
@@ -1372,7 +1443,6 @@ fn test_declaration_with_letq_reports_continuation_mismatch_without_bind_in_scop
 
     let mut imports = HashMap::new();
     imports.insert("Result".to_string(), "result".to_string());
-    imports.insert("debug".to_string(), "io".to_string());
     imports.insert("assert_eq".to_string(), "testing".to_string());
 
     let mut imported_type_decls = exported_type_decls(result_src);
@@ -1380,25 +1450,27 @@ fn test_declaration_with_letq_reports_continuation_mismatch_without_bind_in_scop
 
     let src = r#"
             (use result [Result])
-            (use io)
             (use testing [assert_eq])
             (test "x"
               (let? [val (assert_eq 1 1)]
-                (io/debug val)))
+                (debug val)))
         "#;
 
-    let report = compile_with_imports_report(
-        "string_test",
-        src,
-        "tests/string_test.mond",
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "string_test",
+        source: src,
+        source_path: "tests/string_test.mond",
         imports,
-        &module_exports,
-        HashMap::new(),
-        &imported_type_decls,
-        &[],
-        &HashMap::new(),
-        &imported_schemes,
-    );
+        module_exports: &module_exports,
+        module_aliases: HashMap::new(),
+        imported_type_decls: &imported_type_decls,
+        debug_type_decls: &imported_type_decls,
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &imported_schemes,
+        compile_target: CompileTarget::Dev,
+    });
 
     assert!(report.has_errors(), "expected type error");
     assert!(
@@ -1419,18 +1491,23 @@ fn session_can_suppress_warning_emission() {
         emit_warnings: false,
     });
     let src = "(let main {} 0)\n(let dead {} 1)";
-    let result = compile_with_imports_in_session(
+    let result = compile_with_imports_in_session_api(
         &mut sess,
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
+        CompileWithImportsInput {
+            module_name: "main",
+            source: src,
+            source_path: "main.mond",
+            imports: HashMap::new(),
+            module_exports: &HashMap::new(),
+            module_aliases: HashMap::new(),
+            imported_type_decls: &[],
+            debug_type_decls: &[],
+            imported_extern_types: &[],
+            imported_field_indices: &HashMap::new(),
+            imported_private_records: &HashMap::new(),
+            imported_schemes: &HashMap::new(),
+            compile_target: CompileTarget::Dev,
+        },
     );
     assert!(result.output.is_some());
     assert_eq!(sess.emitted_warnings, 0);
@@ -1443,18 +1520,23 @@ fn session_still_emits_errors_when_warnings_disabled() {
         emit_warnings: false,
     });
     let src = "(let main {} unknown)";
-    let result = compile_with_imports_in_session(
+    let result = compile_with_imports_in_session_api(
         &mut sess,
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
+        CompileWithImportsInput {
+            module_name: "main",
+            source: src,
+            source_path: "main.mond",
+            imports: HashMap::new(),
+            module_exports: &HashMap::new(),
+            module_aliases: HashMap::new(),
+            imported_type_decls: &[],
+            debug_type_decls: &[],
+            imported_extern_types: &[],
+            imported_field_indices: &HashMap::new(),
+            imported_private_records: &HashMap::new(),
+            imported_schemes: &HashMap::new(),
+            compile_target: CompileTarget::Dev,
+        },
     );
     assert!(result.output.is_none());
     assert!(sess.emitted_errors > 0);
@@ -1554,18 +1636,21 @@ fn unused_local_analysis_marks_unused_letq_pattern_bindings() {
 #[test]
 fn compile_emits_unused_local_binding_warning() {
     let src = "(let main {} (let [x 1 y 2] x))";
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
 
     let messages: Vec<String> = report.diagnostics.into_iter().map(|d| d.message).collect();
     assert!(
@@ -1579,18 +1664,21 @@ fn compile_emits_unused_local_binding_warning() {
 #[test]
 fn compile_emits_unused_match_binding_warning() {
     let src = "(let main {x} (match x y ~> 1))";
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
 
     let messages: Vec<String> = report.diagnostics.into_iter().map(|d| d.message).collect();
     assert!(
@@ -1604,18 +1692,21 @@ fn compile_emits_unused_match_binding_warning() {
 #[test]
 fn compile_emits_unused_type_parameter_warning() {
     let src = "(type ['s 'm] Box [(:value ~ Int)])\n(let main {} ())";
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
 
     let messages: Vec<String> = report.diagnostics.into_iter().map(|d| d.message).collect();
     assert!(
@@ -1722,18 +1813,21 @@ fn redundant_match_analysis_flags_constructor_after_family_coverage() {
 #[test]
 fn compile_report_emits_redundant_match_warning() {
     let src = "(let main {x} (match x True ~> 1 False ~> 0 True ~> 2))";
-    let report = compile_with_imports_report(
-        "main",
-        src,
-        "main.mond",
-        HashMap::new(),
-        &HashMap::new(),
-        HashMap::new(),
-        &[],
-        &[],
-        &HashMap::new(),
-        &HashMap::new(),
-    );
+    let report = compile_with_imports_report_api(CompileWithImportsInput {
+        module_name: "main",
+        source: src,
+        source_path: "main.mond",
+        imports: HashMap::new(),
+        module_exports: &HashMap::new(),
+        module_aliases: HashMap::new(),
+        imported_type_decls: &[],
+        debug_type_decls: &[],
+        imported_extern_types: &[],
+        imported_field_indices: &HashMap::new(),
+        imported_private_records: &HashMap::new(),
+        imported_schemes: &HashMap::new(),
+        compile_target: CompileTarget::Dev,
+    });
 
     let messages: Vec<String> = report.diagnostics.into_iter().map(|d| d.message).collect();
     assert!(

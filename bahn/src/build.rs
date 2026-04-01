@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::{BIN_ENTRY_POINT, LIB_ROOT, TARGET_DIR, gitignore, manifest::BahnManifest};
+use crate::{BIN_ENTRY_POINT, LIB_ROOT, TARGET_DIR, manifest::BahnManifest};
 use eyre::Context;
 use semver::Version;
 use walkdir::WalkDir;
@@ -256,6 +256,15 @@ pub(crate) async fn generate_erl_sources(
     project_dir: &Path,
     erl_dir: &Path,
 ) -> eyre::Result<ErlSources> {
+    generate_erl_sources_for_target(manifest, project_dir, erl_dir, mondc::CompileTarget::Dev).await
+}
+
+pub(crate) async fn generate_erl_sources_for_target(
+    manifest: BahnManifest,
+    project_dir: &Path,
+    erl_dir: &Path,
+    compile_target: mondc::CompileTarget,
+) -> eyre::Result<ErlSources> {
     let mond_version = Version::parse(crate::VERSION).context("Failed to parse mond version no")?;
     if let Some(min_mond_version) = &manifest.package.min_mond_version
         && &mond_version < min_mond_version
@@ -265,7 +274,8 @@ pub(crate) async fn generate_erl_sources(
         )));
     }
 
-    generate_erl_sources_with_roots(manifest, project_dir, erl_dir, &[]).await
+    generate_erl_sources_with_roots_for_target(manifest, project_dir, erl_dir, &[], compile_target)
+        .await
 }
 
 pub(crate) async fn generate_erl_sources_with_roots(
@@ -273,6 +283,23 @@ pub(crate) async fn generate_erl_sources_with_roots(
     project_dir: &Path,
     erl_dir: &Path,
     extra_roots: &[String],
+) -> eyre::Result<ErlSources> {
+    generate_erl_sources_with_roots_for_target(
+        manifest,
+        project_dir,
+        erl_dir,
+        extra_roots,
+        mondc::CompileTarget::Dev,
+    )
+    .await
+}
+
+pub(crate) async fn generate_erl_sources_with_roots_for_target(
+    manifest: BahnManifest,
+    project_dir: &Path,
+    erl_dir: &Path,
+    extra_roots: &[String],
+    compile_target: mondc::CompileTarget,
 ) -> eyre::Result<ErlSources> {
     let loaded_dependencies = deps::load_dependencies(project_dir, &manifest)?;
     let dependency_mods = loaded_dependencies.modules.clone();
@@ -383,8 +410,13 @@ pub(crate) async fn generate_erl_sources_with_roots(
             source_label: format!("{module_name}.mond"),
         })
         .collect();
-    let (source_outputs, source_had_error) =
-        compile_flow::compile_units(&source_compile_units, Arc::clone(&analysis), true).await;
+    let (source_outputs, source_had_error) = compile_flow::compile_units(
+        &source_compile_units,
+        Arc::clone(&analysis),
+        true,
+        compile_target,
+    )
+    .await;
     for output in source_outputs {
         if let Some(erl_source) = output.erl_source() {
             erl_paths.push(compile_flow::write_erl_output(
@@ -416,6 +448,7 @@ pub(crate) async fn generate_erl_sources_with_roots(
         &dependency_compile_units,
         Arc::clone(&dependency_analysis),
         true,
+        compile_target,
     )
     .await;
     for output in dependency_outputs {
@@ -493,7 +526,6 @@ pub(crate) async fn build(project_dir: &Path, run: bool) -> eyre::Result<()> {
         .context(format!("could not create {ERL_BEAM_SUBDIR} dir"))?;
     std::fs::create_dir_all(&build_dir)
         .context(format!("could not create {DEBUG_BUILD_DIR} dir"))?;
-    gitignore::write_gitignore(project_dir.into())?;
 
     let manifest = manifest::read_manifest(project_dir.into())?;
 
@@ -609,7 +641,10 @@ mod tests {
     use super::*;
     use std::{
         future::Future,
-        time::{SystemTime, UNIX_EPOCH},
+        path::{Path, PathBuf},
+        process::Command,
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     fn unique_temp_root() -> PathBuf {
@@ -620,10 +655,145 @@ mod tests {
         std::env::temp_dir().join(format!("mond-build-test-{}-{nanos}", std::process::id()))
     }
 
+    fn cleanup_temp_root(root: &Path) {
+        for _ in 0..5 {
+            match std::fs::remove_dir_all(root) {
+                Ok(()) => return,
+                Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                    thread::sleep(Duration::from_millis(25));
+                }
+                Err(err) => panic!("cleanup temp root: {err}"),
+            }
+        }
+        std::fs::remove_dir_all(root).expect("cleanup temp root");
+    }
+
     fn block_on<T>(future: impl Future<Output = T>) -> T {
         tokio::runtime::Runtime::new()
             .expect("runtime")
             .block_on(future)
+    }
+
+    fn run_ok(cmd: &mut Command) {
+        let output = cmd.output().expect("run command");
+        assert!(
+            output.status.success(),
+            "command failed: {}\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    fn create_std_dependency_repo(root: &Path) -> PathBuf {
+        let repo_dir = root.join("std-src");
+        let repo_src_dir = repo_dir.join("src");
+        std::fs::create_dir_all(&repo_src_dir).expect("create std src");
+        let mut manifest = crate::manifest::create_new_manifest("std".to_string());
+        manifest.dependencies.clear();
+        crate::manifest::write_manifest(&manifest, &repo_dir.join(crate::MANIFEST_NAME))
+            .expect("write std manifest");
+        std::fs::write(
+            repo_src_dir.join("lib.mond"),
+            ";;; std - test fixture root module\n",
+        )
+        .expect("write std lib");
+        std::fs::write(
+            repo_src_dir.join("result.mond"),
+            r#"(pub type ['a 'e] Result
+  [(Ok ~ 'a)
+   (Error ~ 'e)])"#,
+        )
+        .expect("write std result");
+        std::fs::write(
+            repo_src_dir.join("unknown.mond"),
+            r#"(pub extern type Unknown)"#,
+        )
+        .expect("write std unknown");
+
+        run_ok(Command::new("git").arg("init").current_dir(&repo_dir));
+        run_ok(
+            Command::new("git")
+                .args(["add", "."])
+                .current_dir(&repo_dir),
+        );
+        run_ok(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "user.name=test",
+                    "commit",
+                    "-m",
+                    "snapshot",
+                ])
+                .current_dir(&repo_dir),
+        );
+
+        repo_dir
+    }
+
+    fn repo_head_rev(repo_dir: &Path) -> String {
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo_dir)
+            .output()
+            .expect("git rev-parse");
+        assert!(
+            output.status.success(),
+            "git rev-parse failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn compile_and_run_main(project_dir: &Path) -> String {
+        let build_dir = project_dir.join("target").join("integration-run");
+        let erl_dir = build_dir.join(ERL_SOURCE_SUBDIR);
+        let ebin_dir = build_dir.join(ERL_BEAM_SUBDIR);
+        std::fs::create_dir_all(&erl_dir).expect("create erl dir");
+        std::fs::create_dir_all(&ebin_dir).expect("create ebin dir");
+
+        let manifest = crate::manifest::read_manifest(project_dir.into()).expect("read manifest");
+        let ErlSources {
+            erl_paths,
+            module_aliases,
+            ..
+        } = block_on(generate_erl_sources(manifest, project_dir, &erl_dir))
+            .expect("generate erl sources");
+
+        let erlc = Command::new("erlc")
+            .arg("-o")
+            .arg(&ebin_dir)
+            .args(&erl_paths)
+            .output()
+            .expect("run erlc");
+        assert!(
+            erlc.status.success(),
+            "erlc failed:\n{}",
+            String::from_utf8_lossy(&erlc.stderr)
+        );
+
+        let main_module = module_aliases
+            .get("main")
+            .map(String::as_str)
+            .unwrap_or("main");
+        let erl = Command::new("erl")
+            .arg("-noinput")
+            .arg("-pa")
+            .arg(&ebin_dir)
+            .arg("-eval")
+            .arg(format!("{main_module}:main(unit), init:stop()."))
+            .output()
+            .expect("run erl");
+        assert!(
+            erl.status.success(),
+            "erl failed:\n{}{}",
+            String::from_utf8_lossy(&erl.stdout),
+            String::from_utf8_lossy(&erl.stderr)
+        );
+
+        String::from_utf8_lossy(&erl.stdout).to_string()
     }
 
     #[test]
@@ -657,7 +827,7 @@ mod tests {
 (use std/list)
 
 (let some_list {} [1 2 3])
-(let main {} (io/debug (list/map fn {x} (+ x 1) (some_list))))
+(let main {} (debug (list/map fn {x} (+ x 1) (some_list))))
 "#,
         )
         .expect("write main");
@@ -680,7 +850,7 @@ mod tests {
             "entrypoint validation masked compile error: {message}"
         );
 
-        std::fs::remove_dir_all(&root).expect("cleanup temp root");
+        cleanup_temp_root(&root);
     }
 
     #[test]
@@ -877,7 +1047,47 @@ mod tests {
             "generated erl paths should include local helper"
         );
 
-        std::fs::remove_dir_all(&root).expect("cleanup temp root");
+        cleanup_temp_root(&root);
+    }
+
+    #[test]
+    fn generate_erl_sources_does_not_write_debug_registry() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).expect("create temp root");
+
+        let project_dir = root.join("app");
+        std::fs::create_dir_all(project_dir.join("src")).expect("create src dir");
+        let mut manifest = crate::manifest::create_new_manifest("app".to_string());
+        manifest.dependencies.clear();
+        crate::manifest::write_manifest(&manifest, &project_dir.join(crate::MANIFEST_NAME))
+            .expect("write manifest");
+        std::fs::write(
+            project_dir.join("src").join(crate::LIB_ROOT),
+            r#"(pub let root {} 1)"#,
+        )
+        .expect("write lib");
+        std::fs::write(
+            project_dir.join("src").join("io.mond"),
+            r#"(pub let println {x} x)"#,
+        )
+        .expect("write io");
+
+        let out_dir = project_dir.join("target/test-build");
+        std::fs::create_dir_all(&out_dir).expect("create output dir");
+        let generated = block_on(generate_erl_sources(manifest, &project_dir, &out_dir))
+            .expect("generate sources");
+        let registry_path = out_dir.join("mond_debug_registry.erl");
+
+        assert!(
+            !registry_path.exists(),
+            "debug registry should not be written"
+        );
+        assert!(
+            !generated.erl_paths.iter().any(|p| p == &registry_path),
+            "generated erl paths should not include a registry module"
+        );
+
+        cleanup_temp_root(&root);
     }
 
     #[test]
@@ -938,8 +1148,105 @@ mod tests {
             generated.module_aliases.get("string").map(String::as_str),
             Some("p_app_string")
         );
+        let generated_files: Vec<String> = generated
+            .erl_paths
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+            .map(str::to_string)
+            .collect();
+        assert!(generated_files.contains(&"p_app_io.erl".to_string()));
+        assert!(generated_files.contains(&"p_app_lib.erl".to_string()));
+        assert!(generated_files.contains(&"p_app_string.erl".to_string()));
 
-        std::fs::remove_dir_all(&root).expect("cleanup temp root");
+        cleanup_temp_root(&root);
+    }
+
+    #[test]
+    fn generate_erl_sources_includes_selected_dependency_modules_without_registry() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).expect("create temp root");
+
+        let dep_repo = root.join("time-src");
+        let dep_src_dir = dep_repo.join("src");
+        std::fs::create_dir_all(&dep_src_dir).expect("create dependency src");
+        let mut dep_manifest = crate::manifest::create_new_manifest("time".to_string());
+        dep_manifest.dependencies.clear();
+        crate::manifest::write_manifest(&dep_manifest, &dep_repo.join(crate::MANIFEST_NAME))
+            .expect("write dependency manifest");
+        std::fs::write(
+            dep_src_dir.join("lib.mond"),
+            r#"(use format)
+
+(pub let now {} (format/iso 1))"#,
+        )
+        .expect("write dep lib");
+        std::fs::write(dep_src_dir.join("format.mond"), r#"(pub let iso {x} x)"#)
+            .expect("write dep format");
+        run_ok(Command::new("git").arg("init").current_dir(&dep_repo));
+        run_ok(
+            Command::new("git")
+                .args(["add", "."])
+                .current_dir(&dep_repo),
+        );
+        run_ok(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "user.name=test",
+                    "commit",
+                    "-m",
+                    "initial",
+                ])
+                .current_dir(&dep_repo),
+        );
+        run_ok(
+            Command::new("git")
+                .args(["tag", "0.0.1"])
+                .current_dir(&dep_repo),
+        );
+
+        let project_dir = root.join("app");
+        std::fs::create_dir_all(project_dir.join("src")).expect("create src dir");
+        let mut manifest = crate::manifest::create_new_manifest("app".to_string());
+        manifest.dependencies.clear();
+        manifest.dependencies.insert(
+            "time".to_string(),
+            crate::manifest::DependencySpec {
+                git: format!("file://{}", dep_repo.display()),
+                reference: crate::manifest::GitReference::Tag("0.0.1".to_string()),
+            },
+        );
+        crate::manifest::write_manifest(&manifest, &project_dir.join(crate::MANIFEST_NAME))
+            .expect("write manifest");
+        std::fs::write(
+            project_dir.join("src").join(crate::LIB_ROOT),
+            r#"(use time)
+
+(pub let root {} (time/now))"#,
+        )
+        .expect("write lib");
+
+        let out_dir = project_dir.join("target/test-build");
+        std::fs::create_dir_all(&out_dir).expect("create output dir");
+        let generated = block_on(generate_erl_sources(manifest, &project_dir, &out_dir))
+            .expect("generate sources");
+        let generated_files: Vec<String> = generated
+            .erl_paths
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+            .map(str::to_string)
+            .collect();
+        assert!(generated_files.contains(&"d_time_time.erl".to_string()));
+        assert!(generated_files.contains(&"d_time_format.erl".to_string()));
+        assert!(generated_files.contains(&"p_app_lib.erl".to_string()));
+        assert!(
+            !generated_files.contains(&"mond_debug_registry.erl".to_string()),
+            "registry module should not be generated"
+        );
+
+        cleanup_temp_root(&root);
     }
 
     #[test]
@@ -970,8 +1277,82 @@ mod tests {
             Some("p_time_lib"),
             "package alias should map to lib module"
         );
+        assert!(
+            generated
+                .erl_paths
+                .iter()
+                .any(|path| path.file_name().and_then(|name| name.to_str())
+                    == Some("p_time_lib.erl"))
+        );
 
-        std::fs::remove_dir_all(&root).expect("cleanup temp root");
+        cleanup_temp_root(&root);
+    }
+
+    #[test]
+    fn build_and_run_debug_prints_mond_values() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).expect("create temp root");
+
+        let std_repo = create_std_dependency_repo(&root);
+        let std_rev = repo_head_rev(&std_repo);
+
+        let project_dir = root.join("app");
+        std::fs::create_dir_all(project_dir.join("src")).expect("create src dir");
+        let mut manifest = crate::manifest::create_new_manifest("app".to_string());
+        manifest.dependencies.insert(
+            "std".to_string(),
+            crate::manifest::DependencySpec {
+                git: format!("file://{}", std_repo.display()),
+                reference: crate::manifest::GitReference::Rev(std_rev),
+            },
+        );
+        crate::manifest::write_manifest(&manifest, &project_dir.join(crate::MANIFEST_NAME))
+            .expect("write manifest");
+        std::fs::write(
+            project_dir.join("src").join("data.mond"),
+            r#"(use std/result [Result])
+
+(type Point [(:x ~ Int) (:y ~ Int)])
+(type Payload [(:points ~ (List Point))])
+
+(pub let ok_value {} (Ok 7))
+(pub let point {} (Point :x 10 :y 12))
+(pub let nested {}
+  (Payload :points
+    [(Point :x 1 :y 2)
+     (Point :x 3 :y 4)]))"#,
+        )
+        .expect("write data module");
+        std::fs::write(
+            project_dir.join("src").join("main.mond"),
+            r#"(use std/unknown [Unknown])
+(use data)
+
+(extern let foreign_list ~ (Unit -> Unknown) mond_io_fixture/foreign_list)
+(extern let foreign_map ~ (Unit -> Unknown) mond_io_fixture/foreign_map)
+
+(let main {}
+  (debug "hello	world")
+  (debug (foreign_list))
+  (debug (data/ok_value))
+  (debug (data/point))
+  (debug (data/nested))
+  (debug (foreign_map)))"#,
+        )
+        .expect("write main module");
+        std::fs::write(
+            project_dir.join("src").join("mond_io_fixture.erl"),
+            "-module(mond_io_fixture).\n-export([foreign_list/0, foreign_map/0]).\nforeign_list() -> [1, [true, false], unit].\nforeign_map() -> #{answer => 42}.\n",
+        )
+        .expect("write fixture helper");
+
+        let stdout = compile_and_run_main(&project_dir);
+        assert_eq!(
+            stdout,
+            "\"hello\\tworld\"\n[1 [True False] ()]\n(Ok 7)\n(Point :x 10 :y 12)\n(Payload :points [(Point :x 1 :y 2) (Point :x 3 :y 4)])\n#{answer => 42}\n"
+        );
+
+        cleanup_temp_root(&root);
     }
 
     #[test]
@@ -1007,6 +1388,6 @@ mod tests {
             "unexpected error: {err}"
         );
 
-        std::fs::remove_dir_all(&root).expect("cleanup temp root");
+        cleanup_temp_root(&root);
     }
 }

@@ -441,7 +441,17 @@ impl Lowerer {
         }
 
         let name = match items.get(cursor) {
-            Some(SExpr::Atom(t)) => self.source_at(file_id, t.span.clone()).to_string(),
+            Some(SExpr::Atom(t)) if matches!(t.kind, TokenKind::Ident) => {
+                self.source_at(file_id, t.span.clone()).to_string()
+            }
+            Some(SExpr::Atom(t)) if matches!(t.kind, TokenKind::Debug) => {
+                self.error(
+                    Diagnostic::error()
+                        .with_message("invalid type name, `debug` is a reserved keyword")
+                        .with_labels(vec![Label::primary(file_id, t.span.clone())]),
+                );
+                return None;
+            }
             other => {
                 self.error(
                     Diagnostic::error()
@@ -580,6 +590,17 @@ impl Lowerer {
                 TokenKind::Ident => {
                     let name = self.source_at(file_id, t.span.clone()).to_string();
                     (String::new(), name)
+                }
+                TokenKind::Debug => {
+                    self.error(
+                        Diagnostic::error()
+                            .with_message("expected a module path in use")
+                            .with_labels(vec![
+                                Label::primary(file_id, t.span.clone())
+                                    .with_message("`debug` is a reserved keyword"),
+                            ]),
+                    );
+                    return None;
                 }
                 _ => {
                     self.error(

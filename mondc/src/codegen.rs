@@ -1,6 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
-use crate::{ast, ir};
+use crate::{ast, ir, pipeline::CompileTarget, typecheck};
 
 // ─── Context ────────────────────────────────────────────────────────────────
 
@@ -23,26 +26,40 @@ struct Ctx {
     record_layouts: HashMap<String, Vec<String>>,
     /// Expression span key (start, end) -> inferred record type name
     record_expr_types: HashMap<(usize, usize), String>,
+    /// Expression span key (start, end) -> inferred expression type
+    expr_types: HashMap<(usize, usize), Arc<typecheck::Type>>,
+    /// Local and imported type declarations keyed by type name
+    type_decls: HashMap<String, ast::TypeDecl>,
+    /// Compile mode controls whether debug lowers to rich or fallback output.
+    compile_target: CompileTarget,
 }
 
 pub struct LowerModuleInput {
+    pub compile_target: CompileTarget,
     pub imports: HashMap<String, String>,
     pub module_aliases: HashMap<String, String>,
+    pub imported_type_decls: Vec<ast::TypeDecl>,
     pub imported_constructors: HashMap<String, usize>,
     pub imported_field_indices: HashMap<(String, String), usize>,
     pub imported_record_layouts: HashMap<String, Vec<String>>,
+    pub inferred_expr_types: HashMap<(usize, usize), Arc<typecheck::Type>>,
     pub inferred_record_expr_types: HashMap<(usize, usize), String>,
 }
+
+const DEBUG_HELPER_NAME: &str = "mond$debug";
 
 // ─── Public entry point ─────────────────────────────────────────────────────
 
 pub fn lower_module(name: &str, decls: &[ast::Declaration], input: LowerModuleInput) -> ir::Module {
     let LowerModuleInput {
+        compile_target,
         imports,
         module_aliases,
+        imported_type_decls,
         imported_constructors,
         imported_field_indices,
         imported_record_layouts,
+        inferred_expr_types,
         inferred_record_expr_types,
     } = input;
 
@@ -53,6 +70,18 @@ pub fn lower_module(name: &str, decls: &[ast::Declaration], input: LowerModuleIn
     let mut constructors = imported_constructors;
     let mut field_indices = imported_field_indices;
     let mut record_layouts = imported_record_layouts;
+    let mut type_decls = HashMap::new();
+    for type_decl in imported_type_decls {
+        let qualified_name = type_decl_name(&type_decl).to_string();
+        type_decls.insert(qualified_name.clone(), type_decl.clone());
+        if let Some((_, unqualified_name)) = qualified_name.rsplit_once('/') {
+            type_decls
+                .entry(unqualified_name.to_string())
+                .or_insert_with(|| {
+                    clone_type_decl_with_name(&type_decl, unqualified_name.to_string())
+                });
+        }
+    }
 
     for decl in decls {
         match decl {
@@ -93,6 +122,10 @@ pub fn lower_module(name: &str, decls: &[ast::Declaration], input: LowerModuleIn
             }
             _ => {}
         }
+
+        if let ast::Declaration::Type(type_decl) = decl {
+            type_decls.insert(type_decl_name(type_decl).to_string(), type_decl.clone());
+        }
     }
 
     let ctx = Ctx {
@@ -105,6 +138,9 @@ pub fn lower_module(name: &str, decls: &[ast::Declaration], input: LowerModuleIn
         field_indices,
         record_layouts,
         record_expr_types: inferred_record_expr_types,
+        expr_types: inferred_expr_types,
+        type_decls,
+        compile_target,
     };
 
     // Pass 2: lower declarations to IR functions
@@ -183,9 +219,16 @@ pub fn lower_module(name: &str, decls: &[ast::Declaration], input: LowerModuleIn
         }
     }
 
+    let support_sources = if module_uses_debug(decls) {
+        vec![debug_support_source(compile_target)]
+    } else {
+        Vec::new()
+    };
+
     ir::Module {
         name: name.to_string(),
         functions,
+        support_sources,
     }
 }
 
@@ -244,6 +287,44 @@ fn span_key(span: &std::ops::Range<usize>) -> (usize, usize) {
     (span.start, span.end)
 }
 
+fn type_decl_name(type_decl: &ast::TypeDecl) -> &str {
+    match type_decl {
+        ast::TypeDecl::Record { name, .. } => name,
+        ast::TypeDecl::Variant { name, .. } => name,
+    }
+}
+
+fn clone_type_decl_with_name(type_decl: &ast::TypeDecl, name: String) -> ast::TypeDecl {
+    match type_decl {
+        ast::TypeDecl::Record {
+            is_pub,
+            params,
+            fields,
+            span,
+            ..
+        } => ast::TypeDecl::Record {
+            is_pub: *is_pub,
+            name,
+            params: params.clone(),
+            fields: fields.clone(),
+            span: span.clone(),
+        },
+        ast::TypeDecl::Variant {
+            is_pub,
+            params,
+            constructors,
+            span,
+            ..
+        } => ast::TypeDecl::Variant {
+            is_pub: *is_pub,
+            name,
+            params: params.clone(),
+            constructors: constructors.clone(),
+            span: span.clone(),
+        },
+    }
+}
+
 fn record_name_for_expr<'a>(expr: &'a ast::Expr, ctx: &'a Ctx) -> Option<&'a str> {
     if let Some(name) = ctx.record_expr_types.get(&span_key(&expr.span())) {
         return Some(name.as_str());
@@ -273,6 +354,12 @@ fn constructor_tag(name: &str) -> String {
     name.rsplit_once('/')
         .map_or(name, |(_, constructor)| constructor)
         .to_lowercase()
+}
+
+fn display_name(name: &str) -> String {
+    name.rsplit_once('/')
+        .map_or(name, |(_, display)| display)
+        .to_string()
 }
 
 fn field_indices_for_label(ctx: &Ctx, field_name: &str) -> Vec<(String, usize)> {
@@ -425,6 +512,362 @@ fn dynamic_record_update(
     )
 }
 
+fn module_uses_debug(decls: &[ast::Declaration]) -> bool {
+    decls.iter().any(|decl| match decl {
+        ast::Declaration::Expression(expr) => expr_uses_debug(expr),
+        ast::Declaration::Test { body, .. } => expr_uses_debug(body),
+        _ => false,
+    })
+}
+
+fn expr_uses_debug(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::Debug { .. } => true,
+        ast::Expr::Literal(_, _) | ast::Expr::Variable(_, _) => false,
+        ast::Expr::List(items, _) => items.iter().any(expr_uses_debug),
+        ast::Expr::LetFunc { value, .. } => expr_uses_debug(value),
+        ast::Expr::LetLocal { value, body, .. } => expr_uses_debug(value) || expr_uses_debug(body),
+        ast::Expr::If {
+            cond, then, els, ..
+        } => expr_uses_debug(cond) || expr_uses_debug(then) || expr_uses_debug(els),
+        ast::Expr::Call { func, args, .. } => {
+            expr_uses_debug(func) || args.iter().any(expr_uses_debug)
+        }
+        ast::Expr::Match { targets, arms, .. } => {
+            targets.iter().any(expr_uses_debug)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_uses_debug) || expr_uses_debug(&arm.body)
+                })
+        }
+        ast::Expr::FieldAccess { record, .. } => expr_uses_debug(record),
+        ast::Expr::RecordConstruct { fields, .. } => {
+            fields.iter().any(|(_, expr)| expr_uses_debug(expr))
+        }
+        ast::Expr::RecordUpdate {
+            record, updates, ..
+        } => expr_uses_debug(record) || updates.iter().any(|(_, expr)| expr_uses_debug(expr)),
+        ast::Expr::Lambda { body, .. } => expr_uses_debug(body),
+        ast::Expr::QualifiedCall { args, .. } => args.iter().any(expr_uses_debug),
+    }
+}
+
+fn expr_type_for<'a>(expr: &'a ast::Expr, ctx: &'a Ctx) -> Option<&'a typecheck::Type> {
+    ctx.expr_types
+        .get(&span_key(&expr.span()))
+        .map(|ty| ty.as_ref())
+}
+
+fn debug_schema_for_expr(expr: &ast::Expr, ctx: &Ctx) -> ir::Expr {
+    let mut seen = HashSet::new();
+    expr_type_for(expr, ctx)
+        .map(|ty| lower_debug_schema(ty, ctx, &mut seen))
+        .unwrap_or_else(|| ir::Expr::Atom("opaque".into()))
+}
+
+fn lower_debug_schema(ty: &typecheck::Type, ctx: &Ctx, seen: &mut HashSet<String>) -> ir::Expr {
+    match ty {
+        typecheck::Type::Fun(_, _) | typecheck::Type::Var(_) => ir::Expr::Atom("opaque".into()),
+        typecheck::Type::Con(name, args) if name == "Int" => ir::Expr::Atom("int".into()),
+        typecheck::Type::Con(name, args) if name == "Float" => ir::Expr::Atom("float".into()),
+        typecheck::Type::Con(name, args) if name == "Bool" => ir::Expr::Atom("bool".into()),
+        typecheck::Type::Con(name, args) if name == "String" => ir::Expr::Atom("string".into()),
+        typecheck::Type::Con(name, args) if name == "Unit" => ir::Expr::Atom("unit".into()),
+        typecheck::Type::Con(name, args) if name == "List" && args.len() == 1 => {
+            ir::Expr::Tuple(vec![
+                ir::Expr::Atom("list".into()),
+                lower_debug_schema(args[0].as_ref(), ctx, seen),
+            ])
+        }
+        typecheck::Type::Con(name, args) => {
+            let key = typecheck::type_display(ty);
+            if !seen.insert(key.clone()) {
+                return ir::Expr::Atom("opaque".into());
+            }
+            let schema = ctx
+                .type_decls
+                .get(name.as_str())
+                .map(|type_decl| lower_named_type_schema(type_decl, args, ctx, seen))
+                .unwrap_or_else(|| ir::Expr::Atom("opaque".into()));
+            seen.remove(&key);
+            schema
+        }
+    }
+}
+
+fn lower_named_type_schema(
+    type_decl: &ast::TypeDecl,
+    args: &[Arc<typecheck::Type>],
+    ctx: &Ctx,
+    seen: &mut HashSet<String>,
+) -> ir::Expr {
+    let (params, bindings) = match type_decl {
+        ast::TypeDecl::Record { params, .. } | ast::TypeDecl::Variant { params, .. } => {
+            let bindings = params
+                .iter()
+                .cloned()
+                .zip(args.iter().cloned())
+                .collect::<HashMap<_, _>>();
+            (params, bindings)
+        }
+    };
+
+    if params.len() != args.len() {
+        return ir::Expr::Atom("opaque".into());
+    }
+
+    match type_decl {
+        ast::TypeDecl::Record { name, fields, .. } => ir::Expr::Tuple(vec![
+            ir::Expr::Atom("record".into()),
+            ir::Expr::Atom(constructor_tag(name)),
+            ir::Expr::Str(display_name(name)),
+            ir::Expr::List(
+                fields
+                    .iter()
+                    .map(|(field_name, field_ty)| {
+                        ir::Expr::Tuple(vec![
+                            ir::Expr::Str(field_name.clone()),
+                            lower_debug_schema_from_usage(field_ty, &bindings, ctx, seen),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ]),
+        ast::TypeDecl::Variant { constructors, .. } => ir::Expr::Tuple(vec![
+            ir::Expr::Atom("variant".into()),
+            ir::Expr::List(
+                constructors
+                    .iter()
+                    .map(|(ctor_name, payload)| match payload {
+                        Some(payload_ty) => ir::Expr::Tuple(vec![
+                            ir::Expr::Atom("tuple".into()),
+                            ir::Expr::Atom(constructor_tag(ctor_name)),
+                            ir::Expr::Str(display_name(ctor_name)),
+                            lower_debug_schema_from_usage(payload_ty, &bindings, ctx, seen),
+                        ]),
+                        None => ir::Expr::Tuple(vec![
+                            ir::Expr::Atom("atom".into()),
+                            ir::Expr::Atom(constructor_tag(ctor_name)),
+                            ir::Expr::Str(display_name(ctor_name)),
+                        ]),
+                    })
+                    .collect(),
+            ),
+        ]),
+    }
+}
+
+fn lower_debug_schema_from_usage(
+    usage: &ast::TypeUsage,
+    bindings: &HashMap<String, Arc<typecheck::Type>>,
+    ctx: &Ctx,
+    seen: &mut HashSet<String>,
+) -> ir::Expr {
+    instantiate_type_usage(usage, bindings)
+        .map(|ty| lower_debug_schema(ty.as_ref(), ctx, seen))
+        .unwrap_or_else(|| ir::Expr::Atom("opaque".into()))
+}
+
+fn instantiate_type_usage(
+    usage: &ast::TypeUsage,
+    bindings: &HashMap<String, Arc<typecheck::Type>>,
+) -> Option<Arc<typecheck::Type>> {
+    match usage {
+        ast::TypeUsage::Named(name, _) => {
+            Some(Arc::new(typecheck::Type::Con(name.clone(), vec![])))
+        }
+        ast::TypeUsage::Generic(name, _) => bindings.get(name).cloned(),
+        ast::TypeUsage::App(name, args, _) => Some(Arc::new(typecheck::Type::Con(
+            name.clone(),
+            args.iter()
+                .map(|arg| instantiate_type_usage(arg, bindings))
+                .collect::<Option<Vec<_>>>()?,
+        ))),
+        ast::TypeUsage::Fun(_, _, _) => None,
+    }
+}
+
+fn debug_support_source(compile_target: CompileTarget) -> String {
+    let prefix = match compile_target {
+        CompileTarget::Dev => DEBUG_DEV_SUPPORT,
+        CompileTarget::Release => DEBUG_RELEASE_SUPPORT,
+    };
+    format!("{prefix}\n{DEBUG_SHARED_SUPPORT}")
+}
+
+const DEBUG_DEV_SUPPORT: &str = r##"
+'mond$debug'(Value, Schema) ->
+    io:put_chars(['mond$debug_render_dev'(Value, Schema, 24), $\n]),
+    unit.
+
+'mond$debug_render_dev'(_Value, _Schema, Depth) when Depth < 0 ->
+    <<"#<debug depth-limit>">>;
+'mond$debug_render_dev'(true, bool, _Depth) ->
+    <<"True">>;
+'mond$debug_render_dev'(false, bool, _Depth) ->
+    <<"False">>;
+'mond$debug_render_dev'(unit, unit, _Depth) ->
+    <<"()">>;
+'mond$debug_render_dev'(Int, int, _Depth) when is_integer(Int) ->
+    integer_to_binary(Int);
+'mond$debug_render_dev'(Float, float, _Depth) when is_float(Float) ->
+    iolist_to_binary(io_lib:format("~p", [Float]));
+'mond$debug_render_dev'(Binary, string, _Depth) when is_binary(Binary) ->
+    case 'mond$debug_quote_utf8_binary'(Binary) of
+        {ok, Quoted} -> Quoted;
+        error -> iolist_to_binary(io_lib:format("~tp", [Binary]))
+    end;
+'mond$debug_render_dev'(List, {list, ElemSchema}, Depth) when is_list(List) ->
+    case 'mond$debug_collect_list'(List, ElemSchema, Depth - 1, []) of
+        {ok, Items} -> [$[, 'mond$debug_join_with_space'(Items), $]];
+        improper -> 'mond$debug_render_release'(List, Depth)
+    end;
+'mond$debug_render_dev'(Tuple, {record, Tag, DisplayName, Fields}, Depth) when is_tuple(Tuple) ->
+    case Tuple of
+        _ when tuple_size(Tuple) =:= length(Fields) + 1, element(1, Tuple) =:= Tag ->
+            'mond$debug_render_record'(DisplayName, Fields, tl(tuple_to_list(Tuple)), Depth - 1);
+        _ ->
+            'mond$debug_render_release'(Tuple, Depth)
+    end;
+'mond$debug_render_dev'(Atom, {variant, Constructors}, Depth) when is_atom(Atom) ->
+    case 'mond$debug_find_variant_atom'(Atom, Constructors) of
+        {ok, DisplayName} -> DisplayName;
+        error -> 'mond$debug_render_release'(Atom, Depth)
+    end;
+'mond$debug_render_dev'(Tuple, {variant, Constructors}, Depth) when is_tuple(Tuple) ->
+    case 'mond$debug_find_variant_tuple'(Tuple, Constructors) of
+        {ok, DisplayName, PayloadSchema} ->
+            PayloadRendered = 'mond$debug_render_dev'(element(2, Tuple), PayloadSchema, Depth - 1),
+            [$(, DisplayName, $\s, PayloadRendered, $)];
+        error ->
+            'mond$debug_render_release'(Tuple, Depth)
+    end;
+'mond$debug_render_dev'(Value, opaque, Depth) ->
+    'mond$debug_render_release'(Value, Depth);
+'mond$debug_render_dev'(Value, _Schema, Depth) ->
+    'mond$debug_render_release'(Value, Depth).
+
+'mond$debug_render_record'(DisplayName, Fields, Values, Depth) ->
+    Parts = 'mond$debug_render_record_fields'(Fields, Values, Depth, []),
+    case Parts of
+        [] -> [$(, DisplayName, $)];
+        _ -> [$(, DisplayName, $\s, 'mond$debug_join_with_space'(Parts), $)]
+    end.
+
+'mond$debug_render_record_fields'([], [], _Depth, Acc) ->
+    lists:reverse(Acc);
+'mond$debug_render_record_fields'([{FieldName, FieldSchema} | FieldRest], [Value | ValueRest], Depth, Acc) ->
+    Rendered = 'mond$debug_render_dev'(Value, FieldSchema, Depth),
+    'mond$debug_render_record_fields'(
+        FieldRest,
+        ValueRest,
+        Depth,
+        [[ $:, FieldName, $\s, Rendered ] | Acc]
+    );
+'mond$debug_render_record_fields'(_Fields, _Values, _Depth, _Acc) ->
+    [].
+
+'mond$debug_collect_list'([], _ElemSchema, _Depth, Acc) ->
+    {ok, lists:reverse(Acc)};
+'mond$debug_collect_list'([Head | Tail], ElemSchema, Depth, Acc) ->
+    Rendered = 'mond$debug_render_dev'(Head, ElemSchema, Depth),
+    'mond$debug_collect_list'(Tail, ElemSchema, Depth, [Rendered | Acc]);
+'mond$debug_collect_list'(_Improper, _ElemSchema, _Depth, _Acc) ->
+    improper.
+
+'mond$debug_find_variant_atom'(_Atom, []) ->
+    error;
+'mond$debug_find_variant_atom'(Atom, [{atom, Atom, DisplayName} | _]) ->
+    {ok, DisplayName};
+'mond$debug_find_variant_atom'(Atom, [_ | Rest]) ->
+    'mond$debug_find_variant_atom'(Atom, Rest).
+
+'mond$debug_find_variant_tuple'(_Tuple, []) ->
+    error;
+'mond$debug_find_variant_tuple'(Tuple, [{tuple, Tag, DisplayName, PayloadSchema} | _])
+  when tuple_size(Tuple) =:= 2, element(1, Tuple) =:= Tag ->
+    {ok, DisplayName, PayloadSchema};
+'mond$debug_find_variant_tuple'(Tuple, [_ | Rest]) ->
+    'mond$debug_find_variant_tuple'(Tuple, Rest).
+"##;
+
+const DEBUG_RELEASE_SUPPORT: &str = r##"
+'mond$debug'(Value) ->
+    io:put_chars(['mond$debug_render_release'(Value, 24), $\n]),
+    unit.
+"##;
+
+const DEBUG_SHARED_SUPPORT: &str = r##"
+'mond$debug_render_release'(_Value, Depth) when Depth < 0 ->
+    <<"#<debug depth-limit>">>;
+'mond$debug_render_release'(true, _Depth) ->
+    <<"True">>;
+'mond$debug_render_release'(false, _Depth) ->
+    <<"False">>;
+'mond$debug_render_release'(unit, _Depth) ->
+    <<"()">>;
+'mond$debug_render_release'(Int, _Depth) when is_integer(Int) ->
+    integer_to_binary(Int);
+'mond$debug_render_release'(Float, _Depth) when is_float(Float) ->
+    iolist_to_binary(io_lib:format("~p", [Float]));
+'mond$debug_render_release'(Binary, _Depth) when is_binary(Binary) ->
+    case 'mond$debug_quote_utf8_binary'(Binary) of
+        {ok, Quoted} -> Quoted;
+        error -> iolist_to_binary(io_lib:format("~tp", [Binary]))
+    end;
+'mond$debug_render_release'(List, Depth) when is_list(List) ->
+    case 'mond$debug_collect_release_list'(List, Depth - 1, []) of
+        {ok, Items} -> [$[, 'mond$debug_join_with_space'(Items), $]];
+        improper -> iolist_to_binary(io_lib:format("~tp", [List]))
+    end;
+'mond$debug_render_release'(Value, _Depth) ->
+    iolist_to_binary(io_lib:format("~tp", [Value])).
+
+'mond$debug_collect_release_list'([], _Depth, Acc) ->
+    {ok, lists:reverse(Acc)};
+'mond$debug_collect_release_list'([Head | Tail], Depth, Acc) ->
+    Rendered = 'mond$debug_render_release'(Head, Depth),
+    'mond$debug_collect_release_list'(Tail, Depth, [Rendered | Acc]);
+'mond$debug_collect_release_list'(_Improper, _Depth, _Acc) ->
+    improper.
+
+'mond$debug_quote_utf8_binary'(Binary) ->
+    case catch unicode:characters_to_list(Binary, utf8) of
+        Chars when is_list(Chars) ->
+            {ok, [$", 'mond$debug_escape_chars'(Chars), $"]};
+        _ ->
+            error
+    end.
+
+'mond$debug_escape_chars'([]) ->
+    [];
+'mond$debug_escape_chars'([Char | Rest]) ->
+    ['mond$debug_escape_char'(Char) | 'mond$debug_escape_chars'(Rest)].
+
+'mond$debug_escape_char'($") ->
+    <<"\\\"">>;
+'mond$debug_escape_char'($\\) ->
+    <<"\\\\">>;
+'mond$debug_escape_char'($\n) ->
+    <<"\\n">>;
+'mond$debug_escape_char'($\t) ->
+    <<"\\t">>;
+'mond$debug_escape_char'($\r) ->
+    <<"\\r">>;
+'mond$debug_escape_char'(Char) when Char < 32; Char =:= 127 ->
+    ["\\u{", string:uppercase(integer_to_list(Char, 16)), "}"];
+'mond$debug_escape_char'(Char) when Char =< 255 ->
+    Char;
+'mond$debug_escape_char'(Char) ->
+    unicode:characters_to_binary([Char]).
+
+'mond$debug_join_with_space'([]) ->
+    [];
+'mond$debug_join_with_space'([Item]) ->
+    Item;
+'mond$debug_join_with_space'([Item | Rest]) ->
+    [Item, $\s | 'mond$debug_join_with_space'(Rest)].
+"##;
+
 // ─── Expression lowering ────────────────────────────────────────────────────
 
 fn lower_expr(expr: &ast::Expr, ctx: &Ctx) -> ir::Expr {
@@ -487,6 +930,19 @@ fn lower_expr_with_renames(
                 ),
             ],
         ),
+
+        ast::Expr::Debug { value, .. } => {
+            let value_ir = lower_expr_with_renames(value, ctx, renames, fresh_idx);
+            match ctx.compile_target {
+                CompileTarget::Dev => ir::Expr::LocalCallMulti(
+                    DEBUG_HELPER_NAME.to_string(),
+                    vec![value_ir, debug_schema_for_expr(value, ctx)],
+                ),
+                CompileTarget::Release => {
+                    ir::Expr::LocalCallMulti(DEBUG_HELPER_NAME.to_string(), vec![value_ir])
+                }
+            }
+        }
 
         ast::Expr::Match { targets, arms, .. } => {
             let scrutinee = if targets.len() == 1 {
@@ -1277,6 +1733,11 @@ pub fn emit_module(module: &ir::Module) -> String {
         out.push('\n');
     }
 
+    for source in &module.support_sources {
+        out.push_str(source.trim_start_matches('\n'));
+        out.push('\n');
+    }
+
     out
 }
 
@@ -1459,6 +1920,42 @@ fn emit_pattern(pat: &ir::Pattern) -> String {
 mod tests {
     use super::{emit_expr, emit_pattern};
     use crate::ir;
+
+    #[test]
+    fn modules_without_debug_do_not_emit_debug_helpers_or_type_info() {
+        let erl = crate::compile("test", "(let main {} 1)").unwrap();
+        assert!(
+            !erl.contains("mond_type_info"),
+            "did not expect mond_type_info metadata:\n{erl}"
+        );
+        assert!(
+            !erl.contains("'mond$debug'"),
+            "did not expect debug helper:\n{erl}"
+        );
+    }
+
+    #[test]
+    fn debug_uses_schema_driven_helpers_in_dev_builds() {
+        let src = r#"
+(type Failure [InvalidPid (BadStatus ~ Int)])
+(type RetryState [(:attempt ~ Int) (:retry_after ~ Int)])
+(let main {}
+  (debug (RetryState :attempt 1 :retry_after 5)))
+"#;
+        let erl = crate::compile("test", src).unwrap();
+        assert!(
+            erl.contains("'mond$debug'("),
+            "expected debug helper call:\n{erl}"
+        );
+        assert!(
+            erl.contains("{record, retrystate, <<\"RetryState\"/utf8>>"),
+            "expected record schema in emitted debug call:\n{erl}"
+        );
+        assert!(
+            !erl.contains("mond_type_info"),
+            "did not expect old module metadata path:\n{erl}"
+        );
+    }
 
     #[test]
     fn multi_arg_tco_emits_two_functions() {

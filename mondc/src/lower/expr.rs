@@ -45,7 +45,12 @@ impl Lowerer {
             }
 
             // Catch keywords that wandered into the wrong place
-            TokenKind::Let | TokenKind::If | TokenKind::Match | TokenKind::Do | TokenKind::With => {
+            TokenKind::Let
+            | TokenKind::If
+            | TokenKind::Match
+            | TokenKind::Do
+            | TokenKind::With
+            | TokenKind::Debug => {
                 self.error(Diagnostic {
                     severity: Severity::Error,
                     code: Some("E003".to_string()),
@@ -115,6 +120,7 @@ impl Lowerer {
                         TokenKind::If => return self.lower_if(file_id, items, span.clone()),
                         TokenKind::Match => return self.lower_match(file_id, items, span.clone()),
                         TokenKind::Do => return self.lower_do(file_id, items, span.clone()),
+                        TokenKind::Debug => return self.lower_debug(file_id, items, span.clone()),
                         TokenKind::With => {
                             return self.lower_record_update(file_id, items, span.clone());
                         }
@@ -179,5 +185,23 @@ impl Lowerer {
         }
 
         Some(Expr::Call { func, args, span })
+    }
+
+    fn lower_debug(&mut self, file_id: usize, items: &[SExpr], span: Range<usize>) -> Option<Expr> {
+        if items.len() != 2 {
+            self.error(
+                Diagnostic::error()
+                    .with_message("invalid debug syntax")
+                    .with_labels(vec![Label::primary(file_id, span.clone())])
+                    .with_notes(vec!["syntax: (debug <expr>)".into()]),
+            );
+            return None;
+        }
+
+        let value = self.lower_expr(file_id, &items[1])?;
+        Some(Expr::Debug {
+            value: Box::new(value),
+            span,
+        })
     }
 }

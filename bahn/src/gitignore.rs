@@ -10,6 +10,7 @@ const GITIGNORE_CONTENTS: &str = "# Compiled output
 
 pub(crate) fn write_gitignore(root: PathBuf) -> eyre::Result<()> {
     let path = root.join(".gitignore");
-    std::fs::write(path, GITIGNORE_CONTENTS).context("failed to write {MANIFEST_NAME} to disk")?;
+    std::fs::write(path, GITIGNORE_CONTENTS)
+        .with_context(|| format!("failed to write {}", root.join(".gitignore").display()))?;
     Ok(())
 }

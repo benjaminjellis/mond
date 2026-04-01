@@ -133,6 +133,7 @@ pub(crate) async fn test(project_dir: &Path) -> eyre::Result<()> {
     let project = Arc::new(mondc::ProjectAnalysis {
         module_exports: all_exports.clone(),
         module_type_decls: module_type_decls.clone(),
+        module_all_type_decls: module_type_decls.clone(),
         module_private_record_types: HashMap::new(),
         module_extern_types: module_extern_types.clone(),
         all_module_schemes: all_module_schemes.clone(),
@@ -148,8 +149,13 @@ pub(crate) async fn test(project_dir: &Path) -> eyre::Result<()> {
             source_label: format!("tests/{module_name}.mond"),
         })
         .collect();
-    let (test_outputs, test_had_error) =
-        compile_flow::compile_units(&test_compile_units, Arc::clone(&project), true).await;
+    let (test_outputs, test_had_error) = compile_flow::compile_units(
+        &test_compile_units,
+        Arc::clone(&project),
+        true,
+        mondc::CompileTarget::Dev,
+    )
+    .await;
     for output in test_outputs {
         let Some(erl_source) = output.erl_source() else {
             continue;
@@ -213,6 +219,7 @@ pub(crate) async fn test(project_dir: &Path) -> eyre::Result<()> {
         &dependency_compile_units,
         Arc::clone(&dependency_analysis),
         true,
+        mondc::CompileTarget::Dev,
     )
     .await;
     for ((user_name, erlang_name, _), output) in selected_test_dependency_mods

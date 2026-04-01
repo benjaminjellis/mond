@@ -121,6 +121,10 @@ pub enum Expr {
         els: Box<Expr>,
         span: Range<usize>,
     },
+    Debug {
+        value: Box<Expr>,
+        span: Range<usize>,
+    },
     Call {
         func: Box<Expr>,
         args: Vec<Expr>,
@@ -215,6 +219,7 @@ impl Expr {
             Expr::LetFunc { span, .. } => span.clone(),
             Expr::LetLocal { span, .. } => span.clone(),
             Expr::If { span, .. } => span.clone(),
+            Expr::Debug { span, .. } => span.clone(),
             Expr::Call { span, .. } => span.clone(),
             Expr::Match { span, .. } => span.clone(),
             Expr::FieldAccess { span, .. } => span.clone(),

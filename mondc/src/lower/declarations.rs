@@ -19,7 +19,17 @@ impl Lowerer {
 
         // 2. Get Type Name: MyType, MyGenericType, Result, etc.
         let name = match items.get(cursor) {
-            Some(SExpr::Atom(t)) => self.source_at(file_id, t.span.clone()).to_string(),
+            Some(SExpr::Atom(t)) if matches!(t.kind, TokenKind::Ident) => {
+                self.source_at(file_id, t.span.clone()).to_string()
+            }
+            Some(SExpr::Atom(t)) if matches!(t.kind, TokenKind::Debug) => {
+                self.error(
+                    Diagnostic::error()
+                        .with_message("invalid type name, `debug` is a reserved keyword")
+                        .with_labels(vec![Label::primary(file_id, t.span.clone())]),
+                );
+                return None;
+            }
             _ => return None, // Error: Missing type name
         };
         cursor += 1;

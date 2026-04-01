@@ -76,6 +76,7 @@ fn main() -> eyre::Result<()> {
     let pipeline = CompilePipeline::new(PassContext {
         visible_exports: &visible_exports,
         analysis: &analysis,
+        compile_target: mondc::CompileTarget::Dev,
     });
     let report = pipeline.compile_module_report(ModuleInput {
         output_module_name: &module_name,

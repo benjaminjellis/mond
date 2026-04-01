@@ -699,30 +699,33 @@ fn test_pipe_desugars_to_nested_unary_calls() {
 }
 
 #[test]
-fn test_qualified_ident_in_value_position_lowers_to_variable() {
-    let (mut lowerer, file_id, sexprs) = setup("io/debug");
+fn test_debug_keyword_lowers_to_special_form() {
+    let (mut lowerer, file_id, sexprs) = setup("(debug x)");
     let expr = lowerer
         .lower_expr(file_id, &sexprs[0])
         .expect("lowering failed");
     assert!(lowerer.diagnostics.is_empty(), "{:?}", lowerer.diagnostics);
-    assert!(matches!(expr, Expr::Variable(ref name, _) if name == "io/debug"));
+
+    if let Expr::Debug { value, .. } = expr {
+        assert!(matches!(*value, Expr::Variable(ref name, _) if name == "x"));
+    } else {
+        panic!("expected Debug");
+    }
 }
 
 #[test]
-fn test_pipe_desugars_qualified_step_to_qualified_variable_call() {
-    let (mut lowerer, file_id, sexprs) = setup("(|> x io/debug)");
-    let expr = lowerer
-        .lower_expr(file_id, &sexprs[0])
-        .expect("lowering failed");
-    assert!(lowerer.diagnostics.is_empty(), "{:?}", lowerer.diagnostics);
-
-    if let Expr::Call { func, args, .. } = expr {
-        assert!(matches!(*func, Expr::Variable(ref name, _) if name == "io/debug"));
-        assert_eq!(args.len(), 1);
-        assert!(matches!(args[0], Expr::Variable(ref name, _) if name == "x"));
-    } else {
-        panic!("expected Call");
-    }
+fn test_debug_keyword_cannot_be_used_as_value() {
+    let (mut lowerer, file_id, sexprs) = setup("debug");
+    let expr = lowerer.lower_expr(file_id, &sexprs[0]);
+    assert!(expr.is_none(), "expected lowering to fail");
+    assert!(
+        lowerer
+            .diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("Unexpected keyword")),
+        "{:?}",
+        lowerer.diagnostics
+    );
 }
 
 #[test]

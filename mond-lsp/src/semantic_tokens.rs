@@ -172,6 +172,9 @@ impl TokenCollector {
     fn collect_expr(&mut self, source: &str, expr: &Expr, locals: &HashMap<String, LocalKind>) {
         match expr {
             Expr::Literal(_, _) => {}
+            Expr::Debug { value, .. } => {
+                self.collect_expr(source, value, locals);
+            }
             Expr::Variable(name, span) => {
                 self.push_variable_token(source, name, span.start, span.end, locals);
             }

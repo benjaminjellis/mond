@@ -148,6 +148,17 @@ pub fn exported_type_decls(source: &str) -> Vec<ast::TypeDecl> {
         .collect()
 }
 
+pub fn all_type_decls(source: &str) -> Vec<ast::TypeDecl> {
+    parse_decls("scan.mond", source)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|d| match d {
+            ast::Declaration::Type(type_decl) => Some(type_decl),
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn private_record_type_names(source: &str) -> Vec<String> {
     parse_decls("scan.mond", source)
         .unwrap_or_default()

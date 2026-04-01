@@ -1359,6 +1359,7 @@ impl Project {
         let pipeline = mondc::CompilePipeline::new(mondc::PassContext {
             visible_exports: &visible_exports,
             analysis: &self.analysis,
+            compile_target: mondc::CompileTarget::Dev,
         });
         let source_path = source_path_for_compile(self.root.as_deref(), &doc.path);
         let report = pipeline.compile_module_report(mondc::ModuleInput {

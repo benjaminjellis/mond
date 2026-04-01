@@ -17,6 +17,7 @@ impl Lowerer {
                     + Self::count_pipe_holes(then)
                     + Self::count_pipe_holes(els)
             }
+            Expr::Debug { value, .. } => Self::count_pipe_holes(value),
             Expr::Call { func, args, .. } => {
                 Self::count_pipe_holes(func)
                     + args.iter().map(Self::count_pipe_holes).sum::<usize>()
@@ -102,6 +103,10 @@ impl Lowerer {
                 cond: Box::new(Self::substitute_pipe_hole(*cond, replacement)),
                 then: Box::new(Self::substitute_pipe_hole(*then, replacement)),
                 els: Box::new(Self::substitute_pipe_hole(*els, replacement)),
+                span,
+            },
+            Expr::Debug { value, span } => Expr::Debug {
+                value: Box::new(Self::substitute_pipe_hole(*value, replacement)),
                 span,
             },
             Expr::Call { func, args, span } => Expr::Call {

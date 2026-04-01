@@ -67,10 +67,15 @@ fn compile_unit_with_session(
     }
 }
 
-fn compile_owned_unit(unit: OwnedCompileUnit, analysis: &mondc::ProjectAnalysis) -> CompileOutput {
+fn compile_owned_unit(
+    unit: OwnedCompileUnit,
+    analysis: &mondc::ProjectAnalysis,
+    compile_target: mondc::CompileTarget,
+) -> CompileOutput {
     let pipeline = mondc::CompilePipeline::new(mondc::PassContext {
         visible_exports: &analysis.module_exports,
         analysis,
+        compile_target,
     });
     let report = pipeline.compile_module_report(mondc::ModuleInput {
         output_module_name: &unit.output_module_name,
@@ -88,10 +93,12 @@ fn compile_units_sequential(
     units: &[CompileUnit<'_>],
     analysis: &mondc::ProjectAnalysis,
     emit_warnings: bool,
+    compile_target: mondc::CompileTarget,
 ) -> (Vec<CompileOutput>, bool) {
     let pipeline = mondc::CompilePipeline::new(mondc::PassContext {
         visible_exports: &analysis.module_exports,
         analysis,
+        compile_target,
     });
     let mut pipeline_session = pipeline.session();
     let mut had_error = false;
@@ -129,11 +136,13 @@ fn spawn_compile_task(
     units: &[CompileUnit<'_>],
     idx: usize,
     analysis: &Arc<mondc::ProjectAnalysis>,
+    compile_target: mondc::CompileTarget,
 ) {
     let owned = OwnedCompileUnit::from_unit(&units[idx]);
     let output_module_name = owned.output_module_name.clone();
     let analysis = Arc::clone(analysis);
-    let abort = set.spawn_blocking(move || (idx, compile_owned_unit(owned, &analysis)));
+    let abort =
+        set.spawn_blocking(move || (idx, compile_owned_unit(owned, &analysis, compile_target)));
     task_meta.insert(abort.id(), (idx, output_module_name));
 }
 
@@ -141,9 +150,10 @@ pub(crate) async fn compile_units(
     units: &[CompileUnit<'_>],
     analysis: Arc<mondc::ProjectAnalysis>,
     emit_warnings: bool,
+    compile_target: mondc::CompileTarget,
 ) -> (Vec<CompileOutput>, bool) {
     if !should_parallelize(units.len()) {
-        return compile_units_sequential(units, &analysis, emit_warnings);
+        return compile_units_sequential(units, &analysis, emit_warnings, compile_target);
     }
 
     let max_in_flight = std::thread::available_parallelism()
@@ -162,7 +172,14 @@ pub(crate) async fn compile_units(
         let Some(idx) = pending.next() else {
             break;
         };
-        spawn_compile_task(&mut set, &mut task_meta, units, idx, &analysis);
+        spawn_compile_task(
+            &mut set,
+            &mut task_meta,
+            units,
+            idx,
+            &analysis,
+            compile_target,
+        );
     }
 
     while let Some(result) = set.join_next_with_id().await {
@@ -209,7 +226,14 @@ pub(crate) async fn compile_units(
             let Some(idx) = pending.next() else {
                 break;
             };
-            spawn_compile_task(&mut set, &mut task_meta, units, idx, &analysis);
+            spawn_compile_task(
+                &mut set,
+                &mut task_meta,
+                units,
+                idx,
+                &analysis,
+                compile_target,
+            );
         }
     }
 
@@ -261,8 +285,12 @@ mod tests {
         }];
 
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let (outputs, had_error) =
-            runtime.block_on(compile_units(&units, Arc::new(analysis), true));
+        let (outputs, had_error) = runtime.block_on(compile_units(
+            &units,
+            Arc::new(analysis),
+            true,
+            mondc::CompileTarget::Dev,
+        ));
         assert_eq!(outputs.len(), 1);
         assert!(!had_error);
         let output = &outputs[0];
@@ -280,8 +308,12 @@ mod tests {
         }];
 
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let (outputs, had_error) =
-            runtime.block_on(compile_units(&units, Arc::new(analysis), true));
+        let (outputs, had_error) = runtime.block_on(compile_units(
+            &units,
+            Arc::new(analysis),
+            true,
+            mondc::CompileTarget::Dev,
+        ));
         assert_eq!(outputs.len(), 1);
         assert!(had_error);
         let output = &outputs[0];
@@ -317,8 +349,12 @@ mod tests {
         ];
 
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let (outputs, had_error) =
-            runtime.block_on(compile_units(&units, Arc::new(analysis), true));
+        let (outputs, had_error) = runtime.block_on(compile_units(
+            &units,
+            Arc::new(analysis),
+            true,
+            mondc::CompileTarget::Dev,
+        ));
         assert!(!had_error);
         assert_eq!(outputs.len(), 2);
         assert_eq!(outputs[0].output_module_name, "z_last");
@@ -342,8 +378,12 @@ mod tests {
         ];
 
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let (outputs, had_error) =
-            runtime.block_on(compile_units(&units, Arc::new(analysis), true));
+        let (outputs, had_error) = runtime.block_on(compile_units(
+            &units,
+            Arc::new(analysis),
+            true,
+            mondc::CompileTarget::Dev,
+        ));
         assert!(had_error);
         assert_eq!(outputs.len(), 2);
         assert!(outputs[0].had_errors());
@@ -383,8 +423,12 @@ mod tests {
         }
 
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let (outputs, had_error) =
-            runtime.block_on(compile_units(&units, Arc::new(analysis), true));
+        let (outputs, had_error) = runtime.block_on(compile_units(
+            &units,
+            Arc::new(analysis),
+            true,
+            mondc::CompileTarget::Dev,
+        ));
 
         assert_eq!(outputs.len(), total_units);
         assert!(had_error);

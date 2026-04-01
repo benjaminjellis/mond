@@ -1,6 +1,48 @@
 use super::*;
 
 impl Lowerer {
+    fn reject_reserved_binding_name(
+        &mut self,
+        file_id: usize,
+        token: &Token,
+        context: &str,
+    ) -> bool {
+        if !matches!(token.kind, TokenKind::Debug) {
+            return false;
+        }
+
+        self.error(
+            Diagnostic::error()
+                .with_message(format!("invalid {context}, `debug` is a reserved keyword"))
+                .with_labels(vec![Label::primary(file_id, token.span.clone())]),
+        );
+        true
+    }
+
+    fn reject_reserved_argument_name(&mut self, file_id: usize, token: &Token) -> bool {
+        match token.kind {
+            TokenKind::Fn => {
+                self.error(
+                    Diagnostic::error()
+                        .with_message(
+                            "invalid argument name, 'f' is a reserved keyword for anonymous functions",
+                        )
+                        .with_labels(vec![Label::primary(file_id, token.span.clone())]),
+                );
+                true
+            }
+            TokenKind::Debug => {
+                self.error(
+                    Diagnostic::error()
+                        .with_message("invalid argument name, `debug` is a reserved keyword")
+                        .with_labels(vec![Label::primary(file_id, token.span.clone())]),
+                );
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn lower_lambda(
         &mut self,
         file_id: usize,
@@ -18,19 +60,21 @@ impl Lowerer {
         }
 
         let (args, arg_spans): (Vec<_>, Vec<_>) = match &items[1] {
-            SExpr::Curly(params, _) => params
-                .iter()
-                .filter_map(|p| {
-                    if let SExpr::Atom(t) = p {
-                        Some((
-                            self.source_at(file_id, t.span.clone()).to_string(),
-                            t.span.clone(),
-                        ))
-                    } else {
-                        None
+            SExpr::Curly(params, _) => {
+                let mut args = Vec::new();
+                let mut arg_spans = Vec::new();
+                for param in params {
+                    let SExpr::Atom(token) = param else {
+                        continue;
+                    };
+                    if self.reject_reserved_argument_name(file_id, token) {
+                        return None;
                     }
-                })
-                .unzip(),
+                    args.push(self.source_at(file_id, token.span.clone()).to_string());
+                    arg_spans.push(token.span.clone());
+                }
+                (args, arg_spans)
+            }
             _ => {
                 self.error(
                     Diagnostic::error()
@@ -44,16 +88,6 @@ impl Lowerer {
                 return None;
             }
         };
-
-        for (arg, span) in args.iter().zip(&arg_spans) {
-            if arg == "f" {
-                self.error(
-                        Diagnostic::error()
-                            .with_message("invalid argument name, 'f' is a reserved keyword for anonymous functions")
-                            .with_labels(vec![Label::primary(file_id, span.clone())]),
-                    )
-            }
-        }
 
         if !matches!(
             items.get(2),
@@ -147,6 +181,11 @@ impl Lowerer {
                     t.span.clone(),
                 ),
                 other => {
+                    if let SExpr::Atom(t) = other
+                        && self.reject_reserved_binding_name(file_id, t, "binding name")
+                    {
+                        return None;
+                    }
                     self.error(
                         Diagnostic::error()
                             .with_message("expected identifier in let? binding")
@@ -471,6 +510,11 @@ impl Lowerer {
                             t.span.clone(),
                         ),
                         other => {
+                            if let SExpr::Atom(t) = other
+                                && self.reject_reserved_binding_name(file_id, t, "binding name")
+                            {
+                                return None;
+                            }
                             let mut diag = Diagnostic::error()
                                 .with_message("expected identifier in let-binding name position")
                                 .with_labels(vec![
@@ -506,6 +550,9 @@ impl Lowerer {
 
             // CASE B: Function Definition -> (let f {a b} body)
             Some(SExpr::Atom(name_token)) => {
+                if self.reject_reserved_binding_name(file_id, name_token, "function name") {
+                    return None;
+                }
                 let name = self.source_at(file_id, name_token.span.clone()).to_string();
                 let name_span = name_token.span.clone();
                 cursor += 1;
@@ -517,6 +564,9 @@ impl Lowerer {
                     let mut arg_spans = Vec::new();
                     for p in params {
                         if let SExpr::Atom(t) = p {
+                            if self.reject_reserved_argument_name(file_id, t) {
+                                return None;
+                            }
                             arg_names.push(self.source_at(file_id, t.span.clone()).to_string());
                             arg_spans.push(t.span.clone());
                         }
@@ -535,18 +585,6 @@ impl Lowerer {
                 );
                     return None;
                 };
-
-                for (arg, span) in args.iter().zip(&arg_spans) {
-                    // we should not allow 'f' as a arg name because it's reserve for anon
-                    // functions
-                    if arg == "f" {
-                        self.error(
-                            Diagnostic::error()
-                                .with_message("invalid argument name, 'f' is a reserved keyword for anonymous functions")
-                                .with_labels(vec![Label::primary(file_id, span.clone())]),
-                        )
-                    }
-                }
 
                 // Collect all body expressions — implicit sequencing like Clojure
                 let body_sexprs = &items[cursor..];

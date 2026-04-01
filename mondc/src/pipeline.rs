@@ -6,10 +6,17 @@ use crate::{
     resolve_imports_for_source, session, typecheck,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompileTarget {
+    Dev,
+    Release,
+}
+
 #[derive(Clone, Copy)]
 pub struct PassContext<'a> {
     pub visible_exports: &'a HashMap<String, Vec<String>>,
     pub analysis: &'a ProjectAnalysis,
+    pub compile_target: CompileTarget,
 }
 
 pub struct ModuleInput<'a> {
@@ -25,6 +32,7 @@ pub struct ResolvedModuleInput<'a> {
     pub imports: HashMap<String, String>,
     pub module_aliases: HashMap<String, String>,
     pub imported_type_decls: Vec<ast::TypeDecl>,
+    pub debug_type_decls: Vec<ast::TypeDecl>,
     pub imported_extern_types: Vec<String>,
     pub imported_field_indices: HashMap<(String, String), usize>,
     pub imported_private_records: HashMap<String, Vec<String>>,
@@ -48,6 +56,7 @@ fn resolve_module_with_context<'a, 'b>(
         imports,
         imported_schemes,
         imported_type_decls,
+        debug_type_decls,
         imported_extern_types,
         imported_field_indices,
         imported_private_records,
@@ -66,6 +75,7 @@ fn resolve_module_with_context<'a, 'b>(
         imports,
         module_aliases,
         imported_type_decls,
+        debug_type_decls,
         imported_extern_types,
         imported_field_indices,
         imported_private_records,
@@ -78,19 +88,23 @@ fn compile_resolved_with_session(
     compiler_session: &mut session::CompilerSession,
     resolved: ResolvedModuleInput<'_>,
 ) -> session::CompileReport {
-    compiler::compile_with_imports_in_session_with_private_records(
+    compiler::compile_with_imports_in_session_with_target_and_private_records(
         compiler_session,
-        resolved.output_module_name,
-        resolved.source,
-        resolved.source_path,
-        resolved.imports,
-        pass_context.visible_exports,
-        resolved.module_aliases,
-        &resolved.imported_type_decls,
-        &resolved.imported_extern_types,
-        &resolved.imported_field_indices,
-        &resolved.imported_private_records,
-        &resolved.imported_schemes,
+        compiler::CompileWithImportsInput {
+            module_name: resolved.output_module_name,
+            source: resolved.source,
+            source_path: resolved.source_path,
+            imports: resolved.imports,
+            module_exports: pass_context.visible_exports,
+            module_aliases: resolved.module_aliases,
+            imported_type_decls: &resolved.imported_type_decls,
+            debug_type_decls: &resolved.debug_type_decls,
+            imported_extern_types: &resolved.imported_extern_types,
+            imported_field_indices: &resolved.imported_field_indices,
+            imported_private_records: &resolved.imported_private_records,
+            imported_schemes: &resolved.imported_schemes,
+            compile_target: pass_context.compile_target,
+        },
     )
 }
 
@@ -166,7 +180,7 @@ impl<'a> CompileSession<'a> {
 mod tests {
     use std::collections::HashMap;
 
-    use super::{CompilePipeline, ModuleInput, PassContext};
+    use super::{CompilePipeline, CompileTarget, ModuleInput, PassContext};
 
     #[test]
     fn compile_pipeline_compiles_single_module() {
@@ -175,6 +189,7 @@ mod tests {
         let pipeline = CompilePipeline::new(PassContext {
             visible_exports: &visible_exports,
             analysis: &analysis,
+            compile_target: CompileTarget::Dev,
         });
 
         let report = pipeline.compile_module_report(ModuleInput {
@@ -194,6 +209,7 @@ mod tests {
         let pipeline = CompilePipeline::new(PassContext {
             visible_exports: &visible_exports,
             analysis: &analysis,
+            compile_target: CompileTarget::Dev,
         });
 
         let report = pipeline.compile_module_report(ModuleInput {
@@ -213,6 +229,7 @@ mod tests {
         let pipeline = CompilePipeline::new(PassContext {
             visible_exports: &visible_exports,
             analysis: &analysis,
+            compile_target: CompileTarget::Dev,
         });
         let mut session = pipeline.session();
 

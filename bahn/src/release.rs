@@ -4,7 +4,7 @@ use eyre::Context;
 
 use crate::{
     ProjectType, TARGET_DIR,
-    build::{ErlSources, generate_erl_sources},
+    build::{ErlSources, generate_erl_sources_for_target},
     manifest, ui,
 };
 
@@ -41,7 +41,13 @@ pub(crate) async fn release(project_dir: &Path) -> eyre::Result<()> {
         project_type,
         module_aliases,
         ..
-    } = generate_erl_sources(manifest, project_dir, &src_dir).await?;
+    } = generate_erl_sources_for_target(
+        manifest,
+        project_dir,
+        &src_dir,
+        mondc::CompileTarget::Release,
+    )
+    .await?;
 
     if matches!(project_type, ProjectType::Lib) {
         return Err(eyre::eyre!("bahn cannot release a library project"));

@@ -461,6 +461,13 @@ fn collect_match_redundancy_diagnostics_expr(
                 out,
             );
         }
+        Expr::Debug { value, .. } => collect_match_redundancy_diagnostics_expr(
+            value,
+            file_id,
+            constructor_families,
+            variant_families,
+            out,
+        ),
         Expr::Call { func, args, .. } => {
             collect_match_redundancy_diagnostics_expr(
                 func,
@@ -687,6 +694,7 @@ fn collect_top_level_refs(
             collect_top_level_refs(then, top_level, locals, out);
             collect_top_level_refs(els, top_level, locals, out);
         }
+        Expr::Debug { value, .. } => collect_top_level_refs(value, top_level, locals, out),
         Expr::Call { func, args, .. } => {
             collect_top_level_refs(func, top_level, locals, out);
             for arg in args {
@@ -786,6 +794,7 @@ fn collect_unused_local_spans(
             free.extend(collect_unused_local_spans(els, out));
             free
         }
+        Expr::Debug { value, .. } => collect_unused_local_spans(value, out),
         Expr::Call { func, args, .. } => {
             let mut free = collect_unused_local_spans(func, out);
             for arg in args {
@@ -894,6 +903,7 @@ fn collect_unqualified_free_vars(
             collect_unqualified_free_vars(then, locals, out);
             collect_unqualified_free_vars(els, locals, out);
         }
+        Expr::Debug { value, .. } => collect_unqualified_free_vars(value, locals, out),
         Expr::Call { func, args, .. } => {
             collect_unqualified_free_vars(func, locals, out);
             for arg in args {
@@ -978,6 +988,7 @@ fn collect_qualified_module_refs(expr: &ast::Expr, out: &mut HashSet<String>) {
             collect_qualified_module_refs(then, out);
             collect_qualified_module_refs(els, out);
         }
+        Expr::Debug { value, .. } => collect_qualified_module_refs(value, out),
         Expr::Call { func, args, .. } => {
             collect_qualified_module_refs(func, out);
             for arg in args {
@@ -1321,6 +1332,9 @@ fn collect_expr_type_decl_refs(
             collect_expr_type_decl_refs(cond, locals, used_value_names, used_record_type_names);
             collect_expr_type_decl_refs(then, locals, used_value_names, used_record_type_names);
             collect_expr_type_decl_refs(els, locals, used_value_names, used_record_type_names);
+        }
+        Expr::Debug { value, .. } => {
+            collect_expr_type_decl_refs(value, locals, used_value_names, used_record_type_names);
         }
         Expr::Call { func, args, .. } => {
             collect_expr_type_decl_refs(func, locals, used_value_names, used_record_type_names);

@@ -1,4 +1,5 @@
 use std::{
+    fs::{File, OpenOptions},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -8,6 +9,17 @@ use eyre::Context;
 use walkdir::WalkDir;
 
 const REQUIRED_OTP_MAJOR: u32 = 28;
+pub(crate) const TARGET_LOCK_FILE_NAME: &str = ".bahn-target.lock";
+
+pub(crate) struct TargetLockGuard {
+    file: File,
+}
+
+impl Drop for TargetLockGuard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
 
 fn check_dep(dep_name: &str) -> Option<bool> {
     Command::new("which")
@@ -101,6 +113,37 @@ pub(crate) fn find_mond_files(dir: &Path) -> Vec<PathBuf> {
     files.sort();
     files
 }
+
+pub(crate) fn acquire_project_target_lock(project_dir: &Path) -> eyre::Result<TargetLockGuard> {
+    let target_dir = project_dir.join(crate::TARGET_DIR);
+    std::fs::create_dir_all(&target_dir)
+        .with_context(|| format!("could not create target dir at {}", target_dir.display()))?;
+    let lock_path = target_dir.join(TARGET_LOCK_FILE_NAME);
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("could not open lock file {}", lock_path.display()))?;
+
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            crate::ui::info("another bahn command is running; waiting for target lock");
+            file.lock()
+                .with_context(|| format!("failed to acquire lock at {}", lock_path.display()))?;
+        }
+        Err(std::fs::TryLockError::Error(err)) => {
+            return Err(eyre::eyre!(
+                "failed to try lock {}: {err}",
+                lock_path.display()
+            ));
+        }
+    }
+
+    Ok(TargetLockGuard { file })
+}
 pub(crate) fn get_styles() -> clap::builder::Styles {
     clap::builder::Styles::styled()
         .usage(
@@ -145,7 +188,35 @@ pub(crate) fn run_async(
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::{check_dep, parse_otp_major};
+    use crate::utils::{
+        TARGET_LOCK_FILE_NAME, acquire_project_target_lock, check_dep, parse_otp_major,
+    };
+    use std::{
+        path::{Path, PathBuf},
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    fn unique_temp_root() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("mond-utils-test-{}-{nanos}", std::process::id()))
+    }
+
+    fn cleanup_temp_root(root: &Path) {
+        for _ in 0..5 {
+            match std::fs::remove_dir_all(root) {
+                Ok(()) => return,
+                Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                    thread::sleep(Duration::from_millis(25));
+                }
+                Err(err) => panic!("cleanup temp root: {err}"),
+            }
+        }
+        std::fs::remove_dir_all(root).expect("cleanup temp root");
+    }
 
     #[test]
     fn test_for_made_up_dep() {
@@ -166,5 +237,25 @@ mod tests {
         assert_eq!(parse_otp_major("25"), Some(25));
         assert_eq!(parse_otp_major("otp-28"), None);
         assert_eq!(parse_otp_major(""), None);
+    }
+
+    #[test]
+    fn acquire_project_target_lock_creates_and_releases_lock_file() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).expect("create temp root");
+
+        {
+            let _guard = acquire_project_target_lock(&root).expect("acquire lock");
+            let lock_path = root.join(crate::TARGET_DIR).join(TARGET_LOCK_FILE_NAME);
+            assert!(
+                lock_path.exists(),
+                "expected lock file at {}",
+                lock_path.display()
+            );
+        }
+
+        let _guard = acquire_project_target_lock(&root).expect("reacquire lock");
+
+        cleanup_temp_root(&root);
     }
 }

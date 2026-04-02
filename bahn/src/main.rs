@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 
 pub(crate) const STD_GIT_URL: &str = "git@github.com:benjaminjellis/mond-std.git";
-pub(crate) const STD_GIT_TAG: &str = "0.0.9";
+pub(crate) const STD_GIT_TAG: &str = "0.0.11";
 pub(crate) const MANIFEST_NAME: &str = "bahn.toml";
 pub(crate) const LOCKFILE_NAME: &str = "bahn.lock";
 pub(crate) const TARGET_DIR: &str = "target";
@@ -85,6 +85,7 @@ fn main() -> eyre::Result<()> {
     let root = Path::new(".");
     match cli.command {
         Commands::Build => {
+            let _target_lock = utils::acquire_project_target_lock(root)?;
             utils::run_async(build::build(root, false))?;
         }
         Commands::Format { path, check } => {
@@ -104,13 +105,16 @@ fn main() -> eyre::Result<()> {
             ui::success(&format!("created {kind} project `{name}`"));
         }
         Commands::Run => {
+            let _target_lock = utils::acquire_project_target_lock(root)?;
             utils::run_async(build::build(root, true))?;
         }
         Commands::Test => {
+            let _target_lock = utils::acquire_project_target_lock(root)?;
             utils::run_async(test::test(root))?;
         }
         Commands::Deps { update } => {
             if update {
+                let _target_lock = utils::acquire_project_target_lock(root)?;
                 let updated = deps::update_dependencies(root)?;
                 if updated.is_empty() {
                     ui::success("no dependencies to update");
@@ -130,9 +134,11 @@ fn main() -> eyre::Result<()> {
             })?;
         }
         Commands::Release => {
+            let _target_lock = utils::acquire_project_target_lock(root)?;
             utils::run_async(release::release(root))?;
         }
         Commands::Clean => {
+            let _target_lock = utils::acquire_project_target_lock(root)?;
             clean::clean(root)?;
         }
     }

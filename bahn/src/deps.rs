@@ -118,10 +118,13 @@ fn validate_dependency_manifest_name(dep_name: &str, checkout_dir: &Path) -> eyr
 }
 
 fn dependency_spec_summary(spec: &manifest::DependencySpec) -> String {
-    match &spec.reference {
-        manifest::GitReference::Tag(tag) => format!("{} @ tag `{tag}`", spec.git),
-        manifest::GitReference::Branch(branch) => format!("{} @ branch `{branch}`", spec.git),
-        manifest::GitReference::Rev(rev) => format!("{} @ rev `{rev}`", spec.git),
+    match spec {
+        manifest::DependencySpec::Git { git, reference } => match reference {
+            manifest::GitReference::Tag(tag) => format!("{git} @ tag `{tag}`"),
+            manifest::GitReference::Branch(branch) => format!("{git} @ branch `{branch}`"),
+            manifest::GitReference::Rev(rev) => format!("{git} @ rev `{rev}`"),
+        },
+        manifest::DependencySpec::Path { path } => format!("path `{path}`"),
     }
 }
 
@@ -148,7 +151,48 @@ fn read_lockfile(project_dir: &Path) -> eyre::Result<Option<MondLock>> {
 }
 
 fn dependency_source(spec: &manifest::DependencySpec) -> String {
-    format!("git+{}", spec.git)
+    match spec {
+        manifest::DependencySpec::Git { git, .. } => format!("git+{git}"),
+        manifest::DependencySpec::Path { path } => format!("path+{path}"),
+    }
+}
+
+fn dependency_is_path(spec: &manifest::DependencySpec) -> bool {
+    matches!(spec, manifest::DependencySpec::Path { .. })
+}
+
+fn normalize_dependency_spec(
+    base_dir: &Path,
+    dep_name: &str,
+    spec: &manifest::DependencySpec,
+) -> eyre::Result<manifest::DependencySpec> {
+    match spec {
+        manifest::DependencySpec::Git { .. } => Ok(spec.clone()),
+        manifest::DependencySpec::Path { path } => {
+            let raw_path = PathBuf::from(path);
+            let dependency_dir = if raw_path.is_absolute() {
+                raw_path
+            } else {
+                base_dir.join(raw_path)
+            };
+            let dependency_dir = std::fs::canonicalize(&dependency_dir).with_context(|| {
+                format!(
+                    "failed to resolve path dependency `{dep_name}` at {}",
+                    dependency_dir.display()
+                )
+            })?;
+            Ok(manifest::DependencySpec::Path {
+                path: dependency_dir.display().to_string(),
+            })
+        }
+    }
+}
+
+fn graph_has_path_dependency(resolved: &ResolvedGraph) -> bool {
+    resolved
+        .packages
+        .values()
+        .any(|package| dependency_is_path(&package.spec))
 }
 
 fn package_id(name: &str, source: &str, rev: &str) -> String {
@@ -196,7 +240,11 @@ fn lock_matches_manifest(lock: &MondLock, manifest: &manifest::BahnManifest) -> 
     for alias in root_from_manifest {
         let root_dep = &root_from_lock[&alias];
         let manifest_spec = &manifest.dependencies[&alias];
-        if root_dep.git != manifest_spec.git || root_dep.reference != manifest_spec.reference {
+        let locked_spec = manifest::DependencySpec::Git {
+            git: root_dep.git.clone(),
+            reference: root_dep.reference.clone(),
+        };
+        if &locked_spec != manifest_spec {
             return Ok(false);
         }
         if !lock_packages.contains_key(&root_dep.package) {
@@ -214,27 +262,37 @@ fn write_lockfile(project_dir: &Path, resolved: &ResolvedGraph) -> eyre::Result<
     let root: Vec<LockedRootDependency> = resolved
         .roots
         .iter()
-        .map(|dep| LockedRootDependency {
-            alias: dep.alias.clone(),
-            package: dep.package.clone(),
-            git: dep.spec.git.clone(),
-            reference: dep.spec.reference.clone(),
+        .map(|dep| match &dep.spec {
+            manifest::DependencySpec::Git { git, reference } => Ok(LockedRootDependency {
+                alias: dep.alias.clone(),
+                package: dep.package.clone(),
+                git: git.clone(),
+                reference: reference.clone(),
+            }),
+            manifest::DependencySpec::Path { .. } => Err(eyre::eyre!(
+                "path dependencies are not written to {LOCKFILE_NAME}"
+            )),
         })
-        .collect();
+        .collect::<eyre::Result<Vec<_>>>()?;
 
     let package: Vec<LockedPackage> = resolved
         .packages
         .values()
-        .map(|dep| LockedPackage {
-            id: dep.id.clone(),
-            name: dep.name.clone(),
-            source: dep.source.clone(),
-            git: dep.spec.git.clone(),
-            reference: dep.spec.reference.clone(),
-            resolved_rev: dep.rev.clone(),
-            dependencies: dep.dependencies.clone(),
+        .map(|dep| match &dep.spec {
+            manifest::DependencySpec::Git { git, reference } => Ok(LockedPackage {
+                id: dep.id.clone(),
+                name: dep.name.clone(),
+                source: dep.source.clone(),
+                git: git.clone(),
+                reference: reference.clone(),
+                resolved_rev: dep.rev.clone(),
+                dependencies: dep.dependencies.clone(),
+            }),
+            manifest::DependencySpec::Path { .. } => Err(eyre::eyre!(
+                "path dependencies are not written to {LOCKFILE_NAME}"
+            )),
         })
-        .collect();
+        .collect::<eyre::Result<Vec<_>>>()?;
 
     let lock = MondLock {
         version: LOCKFILE_FORMAT_VERSION,
@@ -261,7 +319,9 @@ fn resolve_dependencies(
     manifest: &manifest::BahnManifest,
     refresh: bool,
 ) -> eyre::Result<ResolvedGraph> {
+    let manifest_has_path_dependency = manifest.dependencies.values().any(dependency_is_path);
     if !refresh
+        && !manifest_has_path_dependency
         && let Some(lock) = read_lockfile(project_dir)?
         && lock_matches_manifest(&lock, manifest)?
     {
@@ -269,7 +329,9 @@ fn resolve_dependencies(
     }
 
     let resolved = resolve_dependencies_from_manifests(project_dir, manifest, refresh)?;
-    write_lockfile(project_dir, &resolved)?;
+    if !graph_has_path_dependency(&resolved) {
+        write_lockfile(project_dir, &resolved)?;
+    }
     Ok(resolved)
 }
 
@@ -302,7 +364,7 @@ fn resolve_dependencies_from_lockfile(
 
     let mut packages: BTreeMap<String, ResolvedPackage> = BTreeMap::new();
     for (id, package) in lock_packages {
-        let checkout_spec = manifest::DependencySpec {
+        let checkout_spec = manifest::DependencySpec::Git {
             git: package.git.clone(),
             reference: manifest::GitReference::Rev(package.resolved_rev.clone()),
         };
@@ -321,7 +383,7 @@ fn resolve_dependencies_from_lockfile(
                 id,
                 name: package.name,
                 source: package.source,
-                spec: manifest::DependencySpec {
+                spec: manifest::DependencySpec::Git {
                     git: package.git,
                     reference: package.reference,
                 },
@@ -337,7 +399,7 @@ fn resolve_dependencies_from_lockfile(
         .map(|root| ResolvedRootDependency {
             alias: root.alias,
             package: root.package,
-            spec: manifest::DependencySpec {
+            spec: manifest::DependencySpec::Git {
                 git: root.git,
                 reference: root.reference,
             },
@@ -361,7 +423,7 @@ fn resolve_dependencies_from_manifests(
         dependency_names: Vec<String>,
     }
 
-    let mut queue: VecDeque<(String, manifest::DependencySpec, String)> = VecDeque::new();
+    let mut queue: VecDeque<(String, manifest::DependencySpec, String, PathBuf)> = VecDeque::new();
     let mut seen_specs: BTreeMap<String, (manifest::DependencySpec, String)> = BTreeMap::new();
     let mut interim: BTreeMap<String, InterimResolvedPackage> = BTreeMap::new();
 
@@ -372,10 +434,12 @@ fn resolve_dependencies_from_manifests(
             dep_name.clone(),
             manifest.dependencies[dep_name].clone(),
             "root manifest".to_string(),
+            project_dir.to_path_buf(),
         ));
     }
 
-    while let Some((dep_name, dep_spec, requested_by)) = queue.pop_front() {
+    while let Some((dep_name, dep_spec, requested_by, base_dir)) = queue.pop_front() {
+        let dep_spec = normalize_dependency_spec(&base_dir, &dep_name, &dep_spec)?;
         if let Some((existing_spec, existing_requested_by)) = seen_specs.get(&dep_name) {
             if existing_spec != &dep_spec {
                 return Err(eyre::eyre!(
@@ -390,7 +454,7 @@ fn resolve_dependencies_from_manifests(
         }
 
         let checkout_dir =
-            checkout_dependency_with_policy(project_dir, &dep_name, &dep_spec, refresh)?;
+            checkout_dependency_with_policy(&base_dir, &dep_name, &dep_spec, refresh)?;
         let dep_manifest = manifest::read_manifest(checkout_dir.clone()).with_context(|| {
             format!(
                 "could not read dependency manifest for `{dep_name}` at {}",
@@ -403,7 +467,10 @@ fn resolve_dependencies_from_manifests(
                 dep_manifest.package.name
             ));
         }
-        let rev = current_dependency_rev(&checkout_dir)?;
+        let rev = match &dep_spec {
+            manifest::DependencySpec::Git { .. } => current_dependency_rev(&checkout_dir)?,
+            manifest::DependencySpec::Path { .. } => "path".to_string(),
+        };
 
         seen_specs.insert(dep_name.clone(), (dep_spec.clone(), requested_by));
         let mut child_dep_names: Vec<String> = dep_manifest.dependencies.keys().cloned().collect();
@@ -413,7 +480,7 @@ fn resolve_dependencies_from_manifests(
             InterimResolvedPackage {
                 name: dep_name.clone(),
                 spec: dep_spec,
-                checkout_dir,
+                checkout_dir: checkout_dir.clone(),
                 rev,
                 dependency_names: child_dep_names.clone(),
             },
@@ -424,6 +491,7 @@ fn resolve_dependencies_from_manifests(
                 child_dep_name.clone(),
                 dep_manifest.dependencies[&child_dep_name].clone(),
                 format!("dependency `{dep_name}`"),
+                checkout_dir.clone(),
             ));
         }
     }
@@ -539,12 +607,16 @@ fn checkout_dependency(
 }
 
 fn checkout_dependency_with_policy(
-    project_dir: &Path,
+    base_dir: &Path,
     dep_name: &str,
     dep_spec: &manifest::DependencySpec,
     refresh: bool,
 ) -> eyre::Result<PathBuf> {
-    let deps_dir = project_dir.join(TARGET_DIR).join("deps");
+    let manifest::DependencySpec::Git { git, reference: _ } = dep_spec else {
+        return checkout_path_dependency(base_dir, dep_name, dep_spec);
+    };
+
+    let deps_dir = base_dir.join(TARGET_DIR).join("deps");
     std::fs::create_dir_all(&deps_dir).with_context(|| {
         format!(
             "could not create dependency cache at {}",
@@ -579,7 +651,7 @@ fn checkout_dependency_with_policy(
                 "clone",
                 "--quiet",
                 "--",
-                dep_spec.git.as_str(),
+                git.as_str(),
                 checkout_dir
                     .to_str()
                     .ok_or_else(|| eyre::eyre!("invalid checkout path"))?,
@@ -616,12 +688,39 @@ fn checkout_dependency_with_policy(
     Ok(checkout_dir)
 }
 
+fn checkout_path_dependency(
+    base_dir: &Path,
+    dep_name: &str,
+    dep_spec: &manifest::DependencySpec,
+) -> eyre::Result<PathBuf> {
+    let manifest::DependencySpec::Path { path } = dep_spec else {
+        return Err(eyre::eyre!("internal error: expected path dependency"));
+    };
+    let raw_path = PathBuf::from(path);
+    let dependency_dir = if raw_path.is_absolute() {
+        raw_path
+    } else {
+        base_dir.join(raw_path)
+    };
+    let dependency_dir = std::fs::canonicalize(&dependency_dir).with_context(|| {
+        format!(
+            "failed to resolve path dependency `{dep_name}` at {}",
+            dependency_dir.display()
+        )
+    })?;
+    validate_dependency_manifest_name(dep_name, &dependency_dir)?;
+    Ok(dependency_dir)
+}
+
 fn checkout_dependency_reference(
     dep_name: &str,
     dep_spec: &manifest::DependencySpec,
     checkout_dir: &Path,
 ) -> eyre::Result<()> {
-    match &dep_spec.reference {
+    let manifest::DependencySpec::Git { reference, .. } = dep_spec else {
+        return Ok(());
+    };
+    match reference {
         manifest::GitReference::Tag(tag) => {
             info(&format!(
                 "Checking out dependency: {dep_name} using tag: {tag}"
@@ -949,7 +1048,7 @@ mond_version = "0.1.0"
             },
             dependencies: std::collections::HashMap::from([(
                 "std".to_string(),
-                manifest::DependencySpec {
+                manifest::DependencySpec::Git {
                     git: format!("file://{}", std_repo.display()),
                     reference: manifest::GitReference::Tag("0.0.1".to_string()),
                 },
@@ -1048,7 +1147,7 @@ mond_version = "0.1.0"
             },
             dependencies: std::collections::HashMap::from([(
                 "time".to_string(),
-                manifest::DependencySpec {
+                manifest::DependencySpec::Git {
                     git: format!("file://{}", dep_repo.display()),
                     reference: manifest::GitReference::Tag("0.0.1".to_string()),
                 },
@@ -1065,6 +1164,137 @@ mond_version = "0.1.0"
         assert!(loaded.modules.iter().any(|module| {
             module.module_name == "format" && module.erlang_name == "d_time_format"
         }));
+
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn load_dependencies_load_from_path() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).expect("create root");
+        let dep_dir = root.join("time-src");
+        let dep_src_dir = dep_dir.join("src");
+        std::fs::create_dir_all(&dep_src_dir).expect("create dependency src");
+        std::fs::write(
+            dep_dir.join(crate::MANIFEST_NAME),
+            r#"[package]
+name = "time"
+version = "0.0.1"
+mond_version = "0.1.0"
+
+[dependencies]
+"#,
+        )
+        .expect("write dependency manifest");
+        std::fs::write(dep_src_dir.join("lib.mond"), "(pub let now {} 1)").expect("write lib");
+        std::fs::write(dep_src_dir.join("format.mond"), "(pub let iso {x} x)")
+            .expect("write format module");
+
+        let project_dir = root.join("app");
+        std::fs::create_dir_all(&project_dir).expect("create project");
+        let manifest = manifest::BahnManifest {
+            package: manifest::Package {
+                name: "app".to_string(),
+                version: Version::new(0, 1, 0),
+                min_mond_version: None,
+            },
+            dependencies: std::collections::HashMap::from([(
+                "time".to_string(),
+                manifest::DependencySpec::Path {
+                    path: "../time-src".to_string(),
+                },
+            )]),
+        };
+
+        let loaded = load_dependencies(&project_dir, &manifest).expect("load dependency");
+        let names: std::collections::HashSet<String> = loaded
+            .modules
+            .iter()
+            .map(|module| module.module_name.clone())
+            .collect();
+        assert!(names.contains("time"));
+        assert!(names.contains("format"));
+        assert!(
+            !project_dir.join(crate::LOCKFILE_NAME).exists(),
+            "path dependencies should not produce a lockfile"
+        );
+
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn load_dependencies_canonicalizes_path_specs_before_conflict_checking() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).expect("create root");
+
+        let std_dir = root.join("std-src");
+        let std_src_dir = std_dir.join("src");
+        std::fs::create_dir_all(&std_src_dir).expect("create std src");
+        std::fs::write(
+            std_dir.join(crate::MANIFEST_NAME),
+            r#"[package]
+name = "std"
+version = "0.0.1"
+mond_version = "0.1.0"
+
+[dependencies]
+"#,
+        )
+        .expect("write std manifest");
+        std::fs::write(std_src_dir.join("lib.mond"), "(pub let hello {} \"hello\")")
+            .expect("write std lib");
+
+        let time_dir = root.join("time-src");
+        let time_src_dir = time_dir.join("src");
+        std::fs::create_dir_all(&time_src_dir).expect("create time src");
+        std::fs::write(
+            time_dir.join(crate::MANIFEST_NAME),
+            r#"[package]
+name = "time"
+version = "0.0.1"
+mond_version = "0.1.0"
+
+[dependencies]
+std = { path = "../std-src" }
+"#,
+        )
+        .expect("write time manifest");
+        std::fs::write(time_src_dir.join("lib.mond"), "(pub let now {} 1)")
+            .expect("write time lib");
+
+        let project_dir = root.join("app");
+        std::fs::create_dir_all(&project_dir).expect("create project");
+        let manifest = manifest::BahnManifest {
+            package: manifest::Package {
+                name: "app".to_string(),
+                version: Version::new(0, 1, 0),
+                min_mond_version: None,
+            },
+            dependencies: std::collections::HashMap::from([
+                (
+                    "std".to_string(),
+                    manifest::DependencySpec::Path {
+                        path: std_dir.display().to_string(),
+                    },
+                ),
+                (
+                    "time".to_string(),
+                    manifest::DependencySpec::Path {
+                        path: "../time-src".to_string(),
+                    },
+                ),
+            ]),
+        };
+
+        let loaded = load_dependencies(&project_dir, &manifest)
+            .expect("equivalent path specs should not conflict");
+        let names: std::collections::HashSet<String> = loaded
+            .modules
+            .iter()
+            .map(|module| module.module_name.clone())
+            .collect();
+        assert!(names.contains("std"));
+        assert!(names.contains("time"));
 
         std::fs::remove_dir_all(root).expect("cleanup");
     }
@@ -1125,7 +1355,7 @@ mond_version = "0.1.0"
             },
             dependencies: std::collections::HashMap::from([(
                 "std".to_string(),
-                manifest::DependencySpec {
+                manifest::DependencySpec::Git {
                     git: format!("file://{}", std_repo.display()),
                     reference: manifest::GitReference::Tag("0.0.1".to_string()),
                 },
@@ -1217,7 +1447,7 @@ mond_version = "0.1.0"
             },
             dependencies: std::collections::HashMap::from([(
                 "std".to_string(),
-                manifest::DependencySpec {
+                manifest::DependencySpec::Git {
                     git: format!("file://{}", std_repo.display()),
                     reference: manifest::GitReference::Tag("0.0.1".to_string()),
                 },
@@ -1291,7 +1521,7 @@ mond_version = "0.1.0"
         );
         manifest.dependencies.insert(
             "std".to_string(),
-            manifest::DependencySpec {
+            manifest::DependencySpec::Git {
                 git: format!("file://{}", std_repo.display()),
                 reference: manifest::GitReference::Tag("0.0.2".to_string()),
             },
@@ -1390,7 +1620,7 @@ mond_version = "0.1.0"
             },
             dependencies: std::collections::HashMap::from([(
                 "std".to_string(),
-                manifest::DependencySpec {
+                manifest::DependencySpec::Git {
                     git: format!("file://{}", std_repo.display()),
                     reference: manifest::GitReference::Rev(initial_rev.clone()),
                 },
@@ -1488,14 +1718,14 @@ mond_version = "0.1.0"
             dependencies: std::collections::HashMap::from([
                 (
                     "a".to_string(),
-                    manifest::DependencySpec {
+                    manifest::DependencySpec::Git {
                         git: format!("file://{}", dep_a.display()),
                         reference: manifest::GitReference::Tag("0.0.1".to_string()),
                     },
                 ),
                 (
                     "b".to_string(),
-                    manifest::DependencySpec {
+                    manifest::DependencySpec::Git {
                         git: format!("file://{}", dep_b.display()),
                         reference: manifest::GitReference::Tag("0.0.1".to_string()),
                     },
@@ -1570,7 +1800,7 @@ mond_version = "0.1.0"
             },
             dependencies: std::collections::HashMap::from([(
                 "std".to_string(),
-                manifest::DependencySpec {
+                manifest::DependencySpec::Git {
                     git: format!("file://{}", std_repo.display()),
                     reference: manifest::GitReference::Tag("0.0.1".to_string()),
                 },
@@ -1689,7 +1919,7 @@ std = {{ git = "file://{}", tag = "0.0.1" }}
             },
             dependencies: std::collections::HashMap::from([(
                 "time".to_string(),
-                manifest::DependencySpec {
+                manifest::DependencySpec::Git {
                     git: format!("file://{}", time_repo.display()),
                     reference: manifest::GitReference::Tag("0.0.1".to_string()),
                 },
@@ -1871,14 +2101,14 @@ util = {{ git = "file://{}", tag = "{util_tag}" }}
             dependencies: std::collections::HashMap::from([
                 (
                     "a".to_string(),
-                    manifest::DependencySpec {
+                    manifest::DependencySpec::Git {
                         git: format!("file://{}", dep_a.display()),
                         reference: manifest::GitReference::Tag("0.0.1".to_string()),
                     },
                 ),
                 (
                     "b".to_string(),
-                    manifest::DependencySpec {
+                    manifest::DependencySpec::Git {
                         git: format!("file://{}", dep_b.display()),
                         reference: manifest::GitReference::Tag("0.0.1".to_string()),
                     },

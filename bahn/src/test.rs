@@ -239,10 +239,7 @@ pub(crate) async fn test(project_dir: &Path) -> eyre::Result<()> {
         mondc::CompileTarget::Dev,
     )
     .await;
-    for (module, output) in selected_test_dependency_mods
-        .iter()
-        .zip(dependency_outputs.into_iter())
-    {
+    for (module, output) in selected_test_dependency_mods.iter().zip(dependency_outputs) {
         debug_assert_eq!(output.output_module_name, module.erlang_name);
         let Some(erl_source) = output.erl_source() else {
             continue;

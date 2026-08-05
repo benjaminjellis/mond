@@ -8,7 +8,7 @@ use clap::builder::styling::{AnsiColor, Color, Style};
 use eyre::Context;
 use walkdir::WalkDir;
 
-const REQUIRED_OTP_MAJOR: u32 = 28;
+const MINIMUM_OTP_MAJOR: u32 = 28;
 pub(crate) const TARGET_LOCK_FILE_NAME: &str = ".bahn-target.lock";
 
 pub(crate) struct TargetLockGuard {
@@ -46,9 +46,9 @@ pub(crate) fn verify_otp_28() -> Result<(), eyre::Report> {
     let major = parse_otp_major(&release)
         .ok_or_else(|| eyre::eyre!("failed to parse OTP release `{release}`"))?;
 
-    if major != REQUIRED_OTP_MAJOR {
+    if major < MINIMUM_OTP_MAJOR {
         return Err(eyre::eyre!(
-            "unsupported Erlang/OTP version `{release}`; bahn requires OTP {REQUIRED_OTP_MAJOR}"
+            "unsupported Erlang/OTP version `{release}`; bahn requires OTP {MINIMUM_OTP_MAJOR} or newer"
         ));
     }
 

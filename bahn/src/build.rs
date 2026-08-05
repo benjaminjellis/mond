@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
@@ -250,26 +250,35 @@ pub(crate) fn reachable_dependency_modules(
         return Ok(Vec::new());
     }
 
-    let dep_sources: Vec<(String, String)> = dependency_mods
-        .iter()
-        .map(|module| (module.module_name.clone(), module.source.clone()))
-        .collect();
-    let root_list: Vec<String> = roots.iter().cloned().collect();
-    let reachable = mondc::reachable_module_sources(&dep_sources, &root_list)
-        .map_err(|err| eyre::eyre!(err))?;
     let modules_by_name: HashMap<String, mondc::DependencyModuleSource> = dependency_mods
         .iter()
         .map(|module| (module.module_name.clone(), module.clone()))
         .collect();
 
-    reachable
-        .into_iter()
-        .map(|(module_name, _)| {
-            modules_by_name.get(&module_name).cloned().ok_or_else(|| {
-                eyre::eyre!("internal error: missing dependency module `{module_name}`")
-            })
-        })
-        .collect::<eyre::Result<Vec<_>>>()
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<String> = roots.iter().cloned().collect();
+    while let Some(module_name) = queue.pop_front() {
+        if !visited.insert(module_name.clone()) {
+            continue;
+        }
+        let Some(module) = modules_by_name.get(&module_name) else {
+            return Err(eyre::eyre!(
+                "internal error: missing dependency module `{module_name}`"
+            ));
+        };
+        for (_, referenced, _) in mondc::used_modules(&module.source) {
+            if modules_by_name.contains_key(&referenced) && !visited.contains(&referenced) {
+                queue.push_back(referenced);
+            }
+        }
+    }
+
+    let selected: Vec<mondc::DependencyModuleSource> = dependency_mods
+        .iter()
+        .filter(|module| visited.contains(&module.module_name))
+        .cloned()
+        .collect();
+    Ok(selected)
 }
 
 pub(crate) fn ensure_dependency_module_closure_complete(
@@ -1072,7 +1081,7 @@ mod tests {
                 package_name: "std".to_string(),
                 module_name: "io".to_string(),
                 erlang_name: "mond_io".to_string(),
-                source: "(use list)\n(pub let println {x} (list/map x))".to_string(),
+                source: "(use std/list)\n(pub let println {x} (list/map x))".to_string(),
                 source_relpath: "src/io.mond".to_string(),
             },
             mondc::DependencyModuleSource {
@@ -1447,7 +1456,7 @@ mod tests {
         manifest.dependencies.clear();
         manifest.dependencies.insert(
             "time".to_string(),
-            crate::manifest::DependencySpec {
+            crate::manifest::DependencySpec::Git {
                 git: format!("file://{}", dep_repo.display()),
                 reference: crate::manifest::GitReference::Tag("0.0.1".to_string()),
             },
@@ -1535,7 +1544,7 @@ mod tests {
         let mut manifest = crate::manifest::create_new_manifest("app".to_string());
         manifest.dependencies.insert(
             "std".to_string(),
-            crate::manifest::DependencySpec {
+            crate::manifest::DependencySpec::Git {
                 git: format!("file://{}", std_repo.display()),
                 reference: crate::manifest::GitReference::Rev(std_rev),
             },

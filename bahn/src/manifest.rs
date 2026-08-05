@@ -24,10 +24,16 @@ pub(crate) struct Package {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct DependencySpec {
-    pub(crate) git: String,
-    #[serde(flatten)]
-    pub(crate) reference: GitReference,
+#[serde(untagged)]
+pub(crate) enum DependencySpec {
+    Git {
+        git: String,
+        #[serde(flatten)]
+        reference: GitReference,
+    },
+    Path {
+        path: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,7 +50,7 @@ impl BahnManifest {
     fn new(name: String) -> Self {
         let dependencies = HashMap::from([(
             "std".to_string(),
-            DependencySpec {
+            DependencySpec::Git {
                 git: STD_GIT_URL.to_string(),
                 reference: GitReference::Tag(STD_GIT_TAG.to_string()),
             },
@@ -89,11 +95,20 @@ pub(crate) fn write_manifest(manifest: &BahnManifest, path: &PathBuf) -> eyre::R
     let dependencies = manifest.dependencies.iter().collect::<BTreeMap<_, _>>();
     for (dep_name, dep) in dependencies {
         let mut inline = InlineTable::new();
-        inline.insert("git", Value::from(dep.git.clone()));
-        match &dep.reference {
-            GitReference::Tag(tag) => inline.insert("tag", Value::from(tag.clone())),
-            GitReference::Branch(branch) => inline.insert("branch", Value::from(branch.clone())),
-            GitReference::Rev(rev) => inline.insert("rev", Value::from(rev.clone())),
+        match dep {
+            DependencySpec::Git { git, reference } => {
+                inline.insert("git", Value::from(git.clone()));
+                match reference {
+                    GitReference::Tag(tag) => inline.insert("tag", Value::from(tag.clone())),
+                    GitReference::Branch(branch) => {
+                        inline.insert("branch", Value::from(branch.clone()))
+                    }
+                    GitReference::Rev(rev) => inline.insert("rev", Value::from(rev.clone())),
+                };
+            }
+            DependencySpec::Path { path } => {
+                inline.insert("path", Value::from(path.clone()));
+            }
         };
         inline.fmt();
         dependencies_table[dep_name] = Item::Value(Value::InlineTable(inline));
